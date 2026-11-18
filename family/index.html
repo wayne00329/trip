@@ -778,6 +778,33 @@
 
     .trip-print { display: none; }
 
+    .split-panel {
+      margin-top: 18px;
+      padding-top: 15px;
+      border-top: 1px solid var(--border);
+    }
+
+    .split-panel h3 { margin: 0; }
+    .split-members { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .split-member {
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--pill);
+      overflow-wrap: anywhere;
+    }
+
+    .split-summary { margin-top: 10px; }
+    .split-summary ul { margin: 5px 0 0; padding-inline-start: 1.4rem; }
+    .split-summary li { padding-block: 2px; overflow-wrap: anywhere; }
+    .split-fields { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 14px; }
+    .split-fields legend { padding: 0 4px; font-weight: 750; }
+    .split-choices { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 5px; }
+
     @page { size: A4; margin: 15mm; }
 
     @media print {
@@ -826,7 +853,6 @@
       <div class="header-actions">
         <button onclick="openStyle()">🎨 風格</button>
         <button data-trip-required onclick="exportPDF()" hidden>匯出 PDF</button>
-        <button data-trip-required onclick="exportBackup()" hidden>備份 JSON</button>
         <button onclick="document.getElementById('importFile').click()">匯入備份</button>
         <button id="editToggle" data-trip-required onclick="toggleEdit()" hidden>預覽行程</button>
         <form method="post" action="/logout"><button type="submit">登出</button></form>
@@ -927,6 +953,14 @@
         <div class="stat"><span class="stat-label">預算餘額</span><strong id="remainingValue" class="stat-value">$0</strong></div>
       </div>
       <div class="progress-track"><div id="budgetProgress" class="progress-bar" style="width:0%"></div></div>
+      <section class="split-panel" aria-labelledby="splitTitle">
+        <div class="card-heading">
+          <h3 id="splitTitle">分帳</h3>
+          <button class="edit-only" onclick="addSplitMember()">＋ 新增分帳成員</button>
+        </div>
+        <div id="splitMembers" class="split-members"></div>
+        <div id="splitSummary" class="split-summary"></div>
+      </section>
       <div id="dailyExpenses"></div>
       <div id="expenseList" class="item-list"></div>
     </section>
@@ -941,10 +975,6 @@
       </div>
       <div id="checklistContent" class="item-list"></div>
     </section>
-
-    <div class="notice">
-      💾 換裝置時，先按「備份 JSON」，再於新裝置按「匯入備份」。
-    </div>
 
     </div>
     <footer>✦ 願每一段旅程，都有值得收藏的風景 ✦</footer>
@@ -1015,8 +1045,21 @@
       hotel: { name: "", address: "", note: "" },
       checklist: [],
       budget: 0,
+      splitMembers: [],
       expenses: []
     };
+
+    const PACKING_CHECKLIST = [
+      "護照",
+      "簽證或入境許可（如適用）",
+      "電子機票或登機證",
+      "住宿訂房確認",
+      "手機",
+      "充電器與充電線",
+      "信用卡與當地現金",
+      "常用藥品（如需要）",
+      "轉接插頭（如需要）"
+    ];
 
     const DEFAULT_STYLE = {
       light: false,
@@ -1044,6 +1087,20 @@
       const list = (value, fallback) => Array.isArray(value)
         ? value.filter(item => item && typeof item === "object" && !Array.isArray(item))
         : fallback;
+      const checklist = list(data.checklist, []);
+      if (data.packingDefaultsAdded !== true) {
+        const existing = new Set(checklist.map(item => String(item.title ?? "").trim()));
+        for (const title of PACKING_CHECKLIST) {
+          if (!existing.has(title)) checklist.push({ title, done: false });
+        }
+      }
+      const memberIds = new Set();
+      const splitMembers = [];
+      for (const member of list(data.splitMembers, [])) {
+        if (typeof member.id !== "string" || !member.id || typeof member.name !== "string" || !member.name.trim() || memberIds.has(member.id)) continue;
+        memberIds.add(member.id);
+        splitMembers.push({ id: member.id, name: member.name });
+      }
 
       return {
         siteName: typeof data.siteName === "string" ? data.siteName : base.siteName,
@@ -1064,9 +1121,18 @@
           address: String(data.hotel?.address ?? base.hotel.address),
           note: String(data.hotel?.note ?? base.hotel.note)
         },
-        checklist: list(data.checklist, base.checklist),
+        checklist,
+        packingDefaultsAdded: true,
         budget: Number(data.budget) || 0,
-        expenses: list(data.expenses, [])
+        splitMembers,
+        expenses: list(data.expenses, []).map(expense => {
+          const payerId = expense.split?.payerId;
+          const candidateIds = expense.split?.participantIds;
+          const participantIds = Array.isArray(candidateIds) ? [...new Set(candidateIds.filter(id => memberIds.has(id)))] : [];
+          const split = memberIds.has(payerId) && participantIds.length && amountInCents(expense.amount) > 0
+            ? { payerId, participantIds } : null;
+          return { ...expense, split };
+        })
       };
     }
 
@@ -1107,7 +1173,7 @@
     function writeTrips(nextTrips, nextActiveTrip) {
       try {
         if (JSON.stringify(readStorage(TRIPS_KEY, null)) !== tripsSnapshot) {
-          showToast("另一個分頁已更新行程。請先備份 JSON，再重新整理。");
+          showToast("另一個分頁已更新行程。請重新整理後再儲存。");
           return false;
         }
         const serialized = JSON.stringify({ trips: nextTrips, activeId: nextActiveTrip?.id ?? null });
@@ -1121,7 +1187,9 @@
     }
 
     function save(message = "已儲存") {
-      if (writeTrips(trips, activeTrip)) showToast(message);
+      const saved = writeTrips(trips, activeTrip);
+      if (saved) showToast(message);
+      return saved;
     }
 
     function saveStyle(message) {
@@ -1159,7 +1227,7 @@
 
     function newTrip() {
       openEditor("新增旅程", [field("title", "旅程名稱", "", "text", "例如：京都四日遊", true)], values => {
-        const created = addTrip({
+        const created = addTrip(normalizeData({
           siteName: "旅",
           overview: { title: values.title, route: "", dates: "", departure: "" },
           flights: [],
@@ -1168,7 +1236,7 @@
           checklist: [],
           budget: 0,
           expenses: []
-        });
+        }));
         if (!created) return false;
         setEditing(true);
         showToast("旅程已建立");
@@ -1321,7 +1389,92 @@
       `;
     }
 
+    function amountInCents(value) {
+      const cents = Math.round(Number(value) * 100);
+      return Number.isSafeInteger(cents) && cents > 0 ? cents : 0;
+    }
+
+    function splitShares(expense) {
+      const cents = amountInCents(expense.amount);
+      const ids = expense.split.participantIds;
+      const base = Math.floor(cents / ids.length);
+      const remainder = cents % ids.length;
+      return ids.map((id, index) => ({ id, cents: base + (index < remainder ? 1 : 0) }));
+    }
+
+    function splitBalances(trip) {
+      const balances = new Map(trip.splitMembers.map(member => [member.id, 0]));
+      let splitCount = 0;
+      for (const expense of trip.expenses) {
+        if (!expense.split) continue;
+        splitCount++;
+        const payer = expense.split.payerId;
+        balances.set(payer, balances.get(payer) + amountInCents(expense.amount));
+        for (const share of splitShares(expense)) {
+          balances.set(share.id, balances.get(share.id) - share.cents);
+        }
+      }
+      const debtors = [];
+      const creditors = [];
+      for (const [id, balance] of balances) {
+        if (balance < 0) debtors.push({ id, cents: -balance });
+        if (balance > 0) creditors.push({ id, cents: balance });
+      }
+      debtors.sort((a, b) => b.cents - a.cents);
+      creditors.sort((a, b) => b.cents - a.cents);
+      const transfers = [];
+      for (let i = 0, j = 0; i < debtors.length && j < creditors.length;) {
+        const debtor = debtors[i];
+        const creditor = creditors[j];
+        const cents = Math.min(debtor.cents, creditor.cents);
+        transfers.push({ from: debtor.id, to: creditor.id, cents });
+        debtor.cents -= cents;
+        creditor.cents -= cents;
+        if (!debtor.cents) i++;
+        if (!creditor.cents) j++;
+      }
+      return { splitCount, transfers };
+    }
+
+    function splitExpenseNote(expense, names) {
+      if (!expense.split) return "";
+      const shares = splitShares(expense).map(share => `${names.get(share.id)} $${money(share.cents / 100)}`);
+      return `${names.get(expense.split.payerId)} 付款，分攤：${shares.join("、")}`;
+    }
+
+    function splitTransferLines(transfers, names) {
+      return transfers.map(({ from, to, cents }) => `${names.get(from)} 付給 ${names.get(to)} $${money(cents / 100)}`);
+    }
+
+    function memberHasExpenses(id) {
+      return data.expenses.some(item => item.split?.payerId === id || item.split?.participantIds.includes(id));
+    }
+
+    function renderSplit(names) {
+      const members = document.getElementById("splitMembers");
+      members.innerHTML = data.splitMembers.map((member, index) => `
+        <span class="split-member">
+          ${escapeHTML(member.name)}
+          <span class="edit-actions">
+            <button class="small-button" onclick="editSplitMember(${index})" aria-label="改名：${escapeHTML(member.name)}">改名</button>
+            <button class="small-button danger" onclick="deleteSplitMember(${index})" aria-label="移除：${escapeHTML(member.name)}" ${memberHasExpenses(member.id) ? 'disabled title="請先修改使用此成員的支出"' : ""}>移除</button>
+          </span>
+        </span>
+      `).join("");
+      const { splitCount, transfers } = splitBalances(data);
+      const summary = document.getElementById("splitSummary");
+      if (!splitCount) {
+        summary.innerHTML = `<p class="sub">${data.splitMembers.length ? "在「記一筆」選擇平均分帳，並指定付款人和分攤成員。" : "先新增分帳成員，再到「記一筆」設定分帳。"}</p>`;
+      } else {
+        const lines = splitTransferLines(transfers, names);
+        summary.innerHTML = lines.length
+          ? `<strong>建議結算</strong><ul>${lines.map(line => `<li>${escapeHTML(line)}</li>`).join("")}</ul>`
+          : '<p class="sub">目前沒有需要互付的款項。</p>';
+      }
+    }
+
     function renderBudget() {
+      const names = new Map(data.splitMembers.map(member => [member.id, member.name]));
       const total = data.expenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
       const remaining = Number(data.budget) - total;
       document.getElementById("budgetValue").textContent = `$${money(data.budget)}`;
@@ -1360,6 +1513,7 @@
           <div class="item-main">
             <div class="item-title">${escapeHTML(item.title)}</div>
             <div class="item-note">${escapeHTML(item.date || "未設定日期")}</div>
+            ${item.split ? `<div class="item-note">${escapeHTML(splitExpenseNote(item, names))}</div>` : ""}
           </div>
           <strong style="color:var(--neon);white-space:nowrap">$${money(item.amount)}</strong>
           <div class="edit-actions">
@@ -1368,6 +1522,7 @@
           </div>
         </article>
       `).join("");
+      renderSplit(names);
     }
 
     function renderChecklist() {
@@ -1452,8 +1607,9 @@
         input.value = input.value.trim();
       }
       if (!event.currentTarget.reportValidity()) return;
-      const values = Object.fromEntries(new FormData(event.currentTarget).entries());
-      if (editorSaveCallback(values) === false) return;
+      const formData = new FormData(event.currentTarget);
+      const values = Object.fromEntries(formData.entries());
+      if (editorSaveCallback(values, formData) === false) return;
       closeModal();
       render();
     });
@@ -1630,48 +1786,126 @@
       });
     }
 
+    function saveBudgetList(key, items, message) {
+      const previous = data[key];
+      data[key] = items;
+      if (save(message)) return true;
+      data[key] = previous;
+      return false;
+    }
+
+    function editSplitMember(index) {
+      const member = data.splitMembers[index];
+      const title = member ? "修改分帳成員" : "新增分帳成員";
+      openEditor(title, [field("memberName", "成員名稱", member?.name, "text", "例如：媽媽", true)], values => {
+        const name = values.memberName;
+        if (data.splitMembers.some((item, position) => position !== index && item.name.toLowerCase() === name.toLowerCase())) {
+          showToast("已有同名的分帳成員");
+          return false;
+        }
+        const members = [...data.splitMembers];
+        if (member) members[index] = { ...member, name };
+        else members.push({ id: crypto.randomUUID(), name });
+        return saveBudgetList("splitMembers", members, member ? "成員已更新" : "分帳成員已新增");
+      });
+    }
+
+    function addSplitMember() {
+      editSplitMember(data.splitMembers.length);
+    }
+
+    function deleteSplitMember(index) {
+      const member = data.splitMembers[index];
+      if (!member || memberHasExpenses(member.id) || !confirm(`確定移除「${member.name}」？`)) return;
+      const members = data.splitMembers.filter((_, position) => position !== index);
+      if (saveBudgetList("splitMembers", members, "成員已移除")) renderBudget();
+    }
+
     function addExpense() {
       editExpenseForm({
         date: todayString(),
         title: "",
         amount: ""
-      }, expense => {
-        data.expenses.push(expense);
-        save("支出已新增");
-      }, "新增一筆支出");
+      }, expense => saveBudgetList("expenses", [...data.expenses, expense], "支出已新增"), "新增一筆支出");
     }
 
     function editExpenseForm(expense, callback, title) {
-      openEditor(title, [
+      const fields = [
         field("date", "日期", expense.date || todayString(), "date"),
-        field("title", "支出項目", expense.title, "text", "例如：晚餐、交通"),
-        field("amount", "金額", expense.amount, "number")
-      ], values => callback({
-        date: values.date,
-        title: values.title,
-        amount: Number(values.amount) || 0
-      }));
+        field("title", "支出項目", expense.title, "text", "例如：晚餐、交通", true),
+        field("amount", "金額", expense.amount, "number", "", true)
+      ];
+      if (data.splitMembers.length) {
+        const selectedIds = new Set(expense.split?.participantIds ?? data.splitMembers.map(member => member.id));
+        const choices = data.splitMembers.map(member => `
+          <label class="check-row"><input type="checkbox" name="splitParticipant" value="${escapeHTML(member.id)}" ${selectedIds.has(member.id) ? "checked" : ""}>${escapeHTML(member.name)}</label>
+        `).join("");
+        const payers = data.splitMembers.map(member => `<option value="${escapeHTML(member.id)}" ${expense.split?.payerId === member.id ? "selected" : ""}>${escapeHTML(member.name)}</option>`).join("");
+        fields.push(`
+          <div class="field">
+            <label for="field-splitMode">分帳方式</label>
+            <select id="field-splitMode" name="splitMode" onchange="toggleExpenseSplit(this.value)">
+              <option value="personal">一般開銷</option>
+              <option value="equal" ${expense.split ? "selected" : ""}>平均分帳</option>
+            </select>
+          </div>
+          <fieldset id="expenseSplitFields" class="split-fields" ${expense.split ? "" : "hidden disabled"}>
+            <legend>平均分帳</legend>
+            <div class="field">
+              <label for="field-payer">付款人</label>
+              <select id="field-payer" name="payer" required><option value="">選擇付款人</option>${payers}</select>
+            </div>
+            <div class="sub" id="splitParticipantLabel">分攤成員</div>
+            <div class="split-choices" role="group" aria-labelledby="splitParticipantLabel">${choices}</div>
+          </fieldset>
+        `);
+      }
+
+      openEditor(title, fields, (values, formData) => {
+        const amount = Number(values.amount);
+        if (!Number.isFinite(amount) || amount < 0) {
+          showToast("請輸入有效的金額");
+          return false;
+        }
+        let split = null;
+        if (values.splitMode === "equal") {
+          const ids = new Set(data.splitMembers.map(member => member.id));
+          const selected = formData.getAll("splitParticipant").filter(id => ids.has(id));
+          const selectedIds = new Set(selected);
+          const participantIds = [...new Set([...(expense.split?.participantIds ?? []), ...selected])].filter(id => selectedIds.has(id));
+          if (!ids.has(values.payer) || !participantIds.length || !amountInCents(amount)) {
+            showToast("分帳需要付款人、至少一位分攤成員和大於 0 的金額");
+            return false;
+          }
+          split = { payerId: values.payer, participantIds };
+        }
+        return callback({ date: values.date, title: values.title, amount, split });
+      });
+    }
+
+    function toggleExpenseSplit(mode) {
+      const fields = document.getElementById("expenseSplitFields");
+      fields.hidden = fields.disabled = mode !== "equal";
     }
 
     function editExpense(index) {
       editExpenseForm(data.expenses[index], updated => {
-        data.expenses[index] = updated;
-        save("支出已更新");
+        const expenses = [...data.expenses];
+        expenses[index] = updated;
+        return saveBudgetList("expenses", expenses, "支出已更新");
       }, "編輯支出");
     }
 
     function deleteExpense(index) {
       if (!confirm("確定刪除這筆支出嗎？")) return;
-      data.expenses.splice(index, 1);
-      save("支出已刪除");
-      render();
+      const expenses = data.expenses.filter((_, position) => position !== index);
+      if (saveBudgetList("expenses", expenses, "支出已刪除")) renderBudget();
     }
 
     function addChecklistItem() {
       openEditor("新增行前清單項目", [
-        field("title", "項目名稱", "", "text", "例如：行動電源")
+        field("title", "項目名稱", "", "text", "例如：行動電源", true)
       ], values => {
-        if (!values.title.trim()) return;
         data.checklist.push({ title: values.title.trim(), done: false });
         save("清單項目已新增");
       });
@@ -1679,7 +1913,7 @@
 
     function editChecklistItem(index) {
       openEditor("修改清單項目", [
-        field("title", "項目名稱", data.checklist[index].title)
+        field("title", "項目名稱", data.checklist[index].title, "text", "", true)
       ], values => {
         data.checklist[index].title = values.title;
         save("清單項目已更新");
@@ -1721,6 +1955,7 @@
     function prepareTripPrint() {
       if (!data || titleBeforePrint !== null) return;
       const title = data.overview.title || "未命名旅程";
+      const names = new Map(data.splitMembers.map(member => [member.id, member.name]));
       const flights = data.flights.map(flight => printEntry(flight.label, [flight.route, flight.note])).join("");
       const days = data.days.map(day => {
         const spots = day.spots.map(spot => printEntry([spot.time, spot.title].filter(Boolean).join("　"), [spot.address, spot.note])).join("");
@@ -1731,8 +1966,10 @@
       const total = expenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
       const budget = data.budget > 0 ? `預算 $${money(data.budget)}　餘額 $${money(data.budget - total)}` : "";
       const costs = data.budget > 0 || expenses.length
-        ? printEntry(`總支出 $${money(total)}`, [budget]) + expenses.map(item => printEntry(`${item.title || "未命名支出"}　$${money(item.amount)}`, [item.date])).join("")
+        ? printEntry(`總支出 $${money(total)}`, [budget]) + expenses.map(item => printEntry(`${item.title || "未命名支出"}　$${money(item.amount)}`, [item.date, splitExpenseNote(item, names)])).join("")
         : "";
+      const { splitCount, transfers } = splitBalances(data);
+      const settlement = splitCount ? printLines(transfers.length ? splitTransferLines(transfers, names) : ["目前沒有需要互付的款項。"]) : "";
       const checklist = printLines(data.checklist.map(item => `${item.done ? "已完成" : "未完成"}　${item.title || "未命名項目"}`));
 
       document.getElementById("tripPrint").innerHTML = `
@@ -1742,6 +1979,7 @@
         ${printSection("每日行程", days)}
         ${printSection("住宿資訊", hotel)}
         ${printSection("旅費", costs)}
+        ${printSection("分帳結算", settlement)}
         ${printSection("行前清單", checklist)}
       `;
       titleBeforePrint = document.title;
@@ -1764,27 +2002,6 @@
       document.getElementById("tripPrint").replaceChildren();
     });
 
-    function exportBackup() {
-      if (!data) return;
-      const backup = {
-        format: "travel-journal",
-        version: 1,
-        exportedAt: new Date().toISOString(),
-        data,
-        style
-      };
-      const blob = new Blob([JSON.stringify(backup, null, 2)], {
-        type: "application/json"
-      });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `travel-journal-${todayString()}.json`;
-      link.click();
-      URL.revokeObjectURL(url);
-      showToast("備份檔已下載");
-    }
-
     document.getElementById("importFile").addEventListener("change", async event => {
       const file = event.target.files?.[0];
       if (!file) return;
@@ -1806,7 +2023,7 @@
           showToast("備份已匯入為新旅程");
         }
       } catch {
-        alert("請選擇透過「備份 JSON」下載的 .json 檔案。");
+        alert("請選擇先前匯出的 .json 行程備份檔。");
       } finally {
         event.target.value = "";
       }
