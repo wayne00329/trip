@@ -83,6 +83,14 @@
       transform: scale(.98);
     }
 
+    button:disabled {
+      opacity: .45;
+      cursor: default;
+      transform: none;
+      box-shadow: none;
+      border-color: var(--border);
+    }
+
     button.primary {
       color: #06111f;
       border-color: transparent;
@@ -366,6 +374,41 @@
     }
 
     .edit-only {
+      display: none;
+    }
+
+    .trip-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      gap: 12px;
+    }
+
+    .trip-picker {
+      display: grid;
+      flex: 1 1 220px;
+      min-width: 0;
+      gap: 4px;
+      font-weight: 800;
+    }
+
+    .trip-picker select {
+      width: 100%;
+      min-width: 0;
+      color: var(--text);
+      background: var(--card-solid);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 12px;
+    }
+
+    .trip-storage {
+      flex-basis: 100%;
+      margin: 0;
+      font-size: .82rem;
+    }
+
+    #overview [hidden] {
       display: none;
     }
 
@@ -731,7 +774,7 @@
   </style>
 </head>
 
-<body>
+<body class="editing">
   <header>
     <div class="header-inner">
       <div class="brand">
@@ -743,7 +786,7 @@
         <button onclick="openStyle()">🎨 風格</button>
         <button onclick="exportData()">⬇️ 匯出</button>
         <button onclick="document.getElementById('importFile').click()">⬆️ 匯入</button>
-        <button id="editToggle" onclick="toggleEdit()">✏️ 編輯</button>
+        <button id="editToggle" onclick="toggleEdit()">預覽行程</button>
       </div>
     </div>
 
@@ -760,6 +803,18 @@
   <input id="importFile" type="file" accept=".json,application/json" hidden>
 
   <main>
+    <section class="card trip-toolbar" aria-label="旅程管理">
+      <label class="trip-picker" for="tripSelect">
+        我的旅程
+        <select id="tripSelect" onchange="switchTrip(this.value)"></select>
+      </label>
+      <div class="button-row">
+        <button id="newTripButton" class="primary" onclick="newTrip()">＋ 新增旅程</button>
+        <button id="deleteTripButton" class="danger" onclick="deleteTrip()" hidden>刪除旅程</button>
+      </div>
+      <p class="sub trip-storage">每次按下「儲存」後，變更會保存在這個瀏覽器。</p>
+    </section>
+
     <section id="overview" class="card hero-card">
       <div class="hero-top">
         <div>
@@ -772,7 +827,7 @@
         <button class="edit-only" onclick="editOverview()">編輯總覽</button>
       </div>
 
-      <div class="countdown">
+      <div id="countdown" class="countdown">
         <div class="count-box"><span id="cdDays" class="count-number">--</span><span class="count-label">天</span></div>
         <div class="count-box"><span id="cdHours" class="count-number">--</span><span class="count-label">時</span></div>
         <div class="count-box"><span id="cdMinutes" class="count-number">--</span><span class="count-label">分</span></div>
@@ -792,14 +847,14 @@
       <div class="card-heading">
         <div>
           <h2>🗺️ 每日散策行程</h2>
-          <div class="sub" style="font-size:.8rem;margin-top:3px">挑選日期，查看當日安排</div>
+          <div id="itineraryHint" class="sub" style="font-size:.8rem;margin-top:3px">選擇日期後，就能新增、修改或調整景點順序。</div>
         </div>
         <button class="edit-only" onclick="addDay()">＋ 新增日期</button>
       </div>
       <div id="dayTabs" class="days"></div>
       <div id="dayControls" class="button-row" style="margin-bottom:12px"></div>
       <div id="spotList" class="spot-grid"></div>
-      <button class="edit-only" style="width:100%;margin-top:13px" onclick="addSpot()">＋ 新增景點</button>
+      <button class="edit-only" style="width:100%;margin-top:13px" onclick="addSpot()">＋ 新增景點或活動</button>
     </section>
 
     <section id="hotel" class="card">
@@ -844,7 +899,7 @@
     </section>
 
     <div class="notice">
-      💾 行程與風格會存在這台裝置的瀏覽器。想換手機時，先按右上方「匯出」，再在新裝置開啟網站並按「匯入」。
+      💾 換裝置時，先「匯出」目前旅程，再於新裝置「匯入」備份。每個備份檔包含一趟旅程。
     </div>
 
     <footer>✦ 願每一段旅程，都有值得收藏的風景 ✦</footer>
@@ -903,7 +958,7 @@
     </section>
   </div>
 
-  <div id="toast" class="toast"></div>
+  <div id="toast" class="toast" role="status"></div>
 
   <script>
     const DEFAULT_DATA = {
@@ -971,6 +1026,8 @@
       neon: "#38bdf8"
     };
 
+    const TRIPS_KEY = "travel_journal_trips";
+
     const clone = value => JSON.parse(JSON.stringify(value));
 
     function readStorage(key, fallback) {
@@ -985,35 +1042,49 @@
     function normalizeData(data) {
       const base = clone(DEFAULT_DATA);
       if (!data || typeof data !== "object") return base;
+      const list = (value, fallback) => Array.isArray(value)
+        ? value.filter(item => item && typeof item === "object" && !Array.isArray(item))
+        : fallback;
 
       return {
         ...base,
         ...data,
         siteName: typeof data.siteName === "string" ? data.siteName : base.siteName,
-        overview: { ...base.overview, ...(data.overview || {}) },
-        flights: Array.isArray(data.flights) ? data.flights : base.flights,
-        days: Array.isArray(data.days) ? data.days.map(day => ({
+        overview: Object.fromEntries(Object.entries(base.overview).map(([key, value]) => [key, String(data.overview?.[key] ?? value)])),
+        flights: list(data.flights, base.flights),
+        days: list(data.days, base.days).map(day => ({
           label: String(day.label ?? "未命名日期"),
-          spots: Array.isArray(day.spots) ? day.spots.map(spot => ({
+          spots: list(day.spots, []).map(spot => ({
             time: String(spot.time ?? ""),
             title: String(spot.title ?? ""),
             note: String(spot.note ?? ""),
             address: String(spot.address ?? ""),
             image: String(spot.image ?? "")
-          })) : []
-        })) : base.days,
-        hotel: { ...base.hotel, ...(data.hotel || {}) },
-        checklist: Array.isArray(data.checklist) ? data.checklist : base.checklist,
+          }))
+        })),
+        hotel: {
+          name: String(data.hotel?.name ?? base.hotel.name),
+          address: String(data.hotel?.address ?? base.hotel.address),
+          note: String(data.hotel?.note ?? base.hotel.note)
+        },
+        checklist: list(data.checklist, base.checklist),
         budget: Number(data.budget) || 0,
-        expenses: Array.isArray(data.expenses) ? data.expenses : []
+        expenses: list(data.expenses, [])
       };
     }
 
-    let data = normalizeData(readStorage("hk27_trip", DEFAULT_DATA));
+    const storedTrips = readStorage(TRIPS_KEY, null);
+    let tripsSnapshot = JSON.stringify(storedTrips);
+    let trips = Array.isArray(storedTrips?.trips) && storedTrips.trips.length
+      ? storedTrips.trips.map(trip => ({ ...trip, data: normalizeData(trip.data) }))
+      : [{ id: "original", data: normalizeData(readStorage("hk27_trip", DEFAULT_DATA)) }];
+    let activeTrip = trips.find(trip => trip.id === storedTrips?.activeId) || trips[0];
+    let data = activeTrip.data;
     let style = { ...DEFAULT_STYLE, ...readStorage("hk27_style", DEFAULT_STYLE) };
     let selectedDay = 0;
     let rainbowHue = 195;
     let editorSaveCallback = null;
+    let editorTrigger = null;
     let toastTimer;
 
     function escapeHTML(value) {
@@ -1037,14 +1108,88 @@
       }
     }
 
-    function save(message = "已儲存") {
+    function writeTrips(nextTrips, nextActiveTrip) {
       try {
-        localStorage.setItem("hk27_trip", JSON.stringify(data));
+        if (JSON.stringify(readStorage(TRIPS_KEY, null)) !== tripsSnapshot) {
+          showToast("另一個分頁已更新行程。請先匯出未儲存的變更，再重新整理。");
+          return false;
+        }
+        const serialized = JSON.stringify({ trips: nextTrips, activeId: nextActiveTrip.id });
+        localStorage.setItem(TRIPS_KEY, serialized);
+        tripsSnapshot = serialized;
+        return true;
+      } catch {
+        showToast("無法儲存，請檢查瀏覽器的儲存設定或空間");
+        return false;
+      }
+    }
+
+    function save(message = "已儲存") {
+      if (writeTrips(trips, activeTrip)) showToast(message);
+    }
+
+    function saveStyle(message) {
+      try {
         localStorage.setItem("hk27_style", JSON.stringify(style));
         showToast(message);
       } catch {
-        showToast("儲存失敗，請檢查瀏覽器儲存空間");
+        showToast("無法儲存網站風格");
       }
+    }
+
+    function activateTrip(trip) {
+      activeTrip = trip;
+      data = trip.data;
+      selectedDay = 0;
+      render();
+    }
+
+    function switchTrip(id) {
+      const trip = trips.find(item => item.id === id);
+      if (!trip || trip === activeTrip) return;
+      if (writeTrips(trips, trip)) activateTrip(trip);
+      else document.getElementById("tripSelect").value = activeTrip.id;
+    }
+
+    function addTrip(tripData) {
+      const id = String(trips.reduce((max, trip) => Math.max(max, Number(trip.id) || 0), 0) + 1);
+      const trip = { id, data: tripData };
+      const nextTrips = [...trips, trip];
+      if (!writeTrips(nextTrips, trip)) return false;
+      trips = nextTrips;
+      activateTrip(trip);
+      return true;
+    }
+
+    function newTrip() {
+      openEditor("新增旅程", [field("title", "旅程名稱", "", "text", "例如：京都四日遊", true)], values => {
+        const created = addTrip({
+          siteName: "旅",
+          overview: { title: values.title, route: "", dates: "", departure: "" },
+          flights: [],
+          days: [{ label: "第 1 天", spots: [] }],
+          hotel: { name: "", address: "", note: "" },
+          checklist: [],
+          budget: 0,
+          expenses: []
+        });
+        if (!created) return false;
+        setEditing(true);
+        showToast("旅程已建立");
+      });
+    }
+
+    function deleteTrip() {
+      if (activeTrip.id === "original") return;
+      const title = data.overview.title || "未命名旅程";
+      if (!confirm(`確定刪除「${title}」及其中的所有行程嗎？`)) return;
+      const nextTrips = trips.filter(trip => trip !== activeTrip);
+      const nextActiveTrip = nextTrips[0];
+      if (!writeTrips(nextTrips, nextActiveTrip)) return;
+      trips = nextTrips;
+      activateTrip(nextActiveTrip);
+      document.getElementById("tripSelect").focus();
+      showToast("旅程已刪除");
     }
 
     function showToast(message) {
@@ -1071,11 +1216,17 @@
       if (!data.days.length) data.days.push({ label: "新的一天", spots: [] });
       selectedDay = Math.max(0, Math.min(selectedDay, data.days.length - 1));
 
+      const tripSelect = document.getElementById("tripSelect");
+      tripSelect.replaceChildren(...trips.map(trip => new Option(trip.data.overview.title || "未命名旅程", trip.id)));
+      tripSelect.value = activeTrip.id;
+      document.getElementById("deleteTripButton").hidden = activeTrip.id === "original";
       document.getElementById("siteName").textContent = data.siteName || "旅";
       document.title = data.siteName || "旅";
       document.getElementById("overviewTitle").textContent = data.overview.title;
       document.getElementById("overviewRoute").textContent = data.overview.route;
       document.getElementById("overviewDates").textContent = data.overview.dates;
+      document.getElementById("overviewCountdownLabel").hidden = !data.overview.departure;
+      document.getElementById("countdown").hidden = !data.overview.departure;
 
       renderFlights();
       renderDays();
@@ -1083,6 +1234,7 @@
       renderBudget();
       renderChecklist();
       applyStyle();
+      updateCountdown();
     }
 
     function renderFlights() {
@@ -1106,7 +1258,7 @@
       const tabs = document.getElementById("dayTabs");
       tabs.innerHTML = data.days.map((day, index) => `
         <button class="day-button ${index === selectedDay ? "selected" : ""}"
-          onclick="selectDay(${index})">${escapeHTML(day.label)}</button>
+          aria-pressed="${index === selectedDay}" onclick="selectDay(${index})">${escapeHTML(day.label)}</button>
       `).join("");
 
       const day = data.days[selectedDay];
@@ -1114,7 +1266,7 @@
         <span class="sub" style="flex:1;font-weight:800">${escapeHTML(day.label)}</span>
         <span class="edit-actions">
           <button class="small-button" onclick="editDay(${selectedDay})">修改日期</button>
-          <button class="small-button danger" onclick="deleteDay(${selectedDay})">刪除日期</button>
+          <button class="small-button danger" onclick="deleteDay(${selectedDay})" ${data.days.length <= 1 ? "disabled" : ""}>刪除日期</button>
         </span>
       `;
 
@@ -1132,7 +1284,9 @@
               <div class="spot-top">
                 <div class="time">${escapeHTML(spot.time)}</div>
                 <div class="edit-actions">
-                  <button class="small-button" onclick="editSpot(${index})">修改</button>
+                  <button class="small-button" data-edit-spot="${index}" onclick="editSpot(${index})">修改</button>
+                  <button class="small-button" data-move-spot="${index},-1" onclick="moveSpot(${index}, -1)" aria-label="將${escapeHTML(spot.title)}往前移" ${index === 0 ? "disabled" : ""}>↑</button>
+                  <button class="small-button" data-move-spot="${index},1" onclick="moveSpot(${index}, 1)" aria-label="將${escapeHTML(spot.title)}往後移" ${index === day.spots.length - 1 ? "disabled" : ""}>↓</button>
                   <button class="small-button danger" onclick="deleteSpot(${index})">刪除</button>
                 </div>
               </div>
@@ -1143,19 +1297,24 @@
             </div>
           </article>
         `;
-      }).join("") || `<div class="notice">這一天還沒有景點，按「新增景點」開始安排吧。</div>`;
+      }).join("") || `<div class="notice">這一天還沒有景點。</div>`;
     }
 
     function renderHotel() {
+      const container = document.getElementById("hotelContent");
       const address = data.hotel.address.trim();
+      if (!data.hotel.name && !address && !data.hotel.note) {
+        container.innerHTML = `<div class="notice">尚未填寫住宿資訊。</div>`;
+        return;
+      }
       const query = encodeURIComponent(address || data.hotel.name);
-      document.getElementById("hotelContent").innerHTML = `
+      container.innerHTML = `
         <article class="item">
           <div class="item-main">
             <div class="item-title">${escapeHTML(data.hotel.name)}</div>
             ${address ? `<div class="item-note">📍 ${escapeHTML(address)}</div>` : ""}
             ${data.hotel.note ? `<div class="item-note">${escapeHTML(data.hotel.note)}</div>` : ""}
-            <a class="map-link" href="https://www.google.com/maps/search/?api=1&query=${query}" target="_blank" rel="noopener noreferrer">📍 在 Google Maps 查看</a>
+            ${query ? `<a class="map-link" href="https://www.google.com/maps/search/?api=1&query=${query}" target="_blank" rel="noopener noreferrer">📍 在 Google Maps 查看</a>` : ""}
           </div>
         </article>
       `;
@@ -1173,7 +1332,7 @@
         : 0;
       document.getElementById("budgetProgress").style.width = `${percent}%`;
 
-      const daily = {};
+      const daily = Object.create(null);
       data.expenses.forEach(item => {
         const date = item.date || "未設定日期";
         daily[date] = (daily[date] || 0) + (Number(item.amount) || 0);
@@ -1248,40 +1407,57 @@
     }
 
     function toggleEdit() {
-      document.body.classList.toggle("editing");
-      const editing = document.body.classList.contains("editing");
-      document.getElementById("editToggle").textContent = editing ? "✅ 完成" : "✏️ 編輯";
+      setEditing(!document.body.classList.contains("editing"));
     }
 
-    function field(key, label, value = "", type = "text", placeholder = "") {
+    function setEditing(editing) {
+      document.body.classList.toggle("editing", editing);
+      document.getElementById("editToggle").textContent = editing ? "預覽行程" : "編輯行程";
+      document.getElementById("itineraryHint").textContent = editing
+        ? "選擇日期後，就能新增、修改或調整景點順序。"
+        : "選擇日期即可查看當日安排。";
+    }
+
+    function field(key, label, value = "", type = "text", placeholder = "", required = false) {
       const isTextarea = type === "textarea";
       const content = isTextarea
         ? `<textarea id="field-${key}" name="${key}" placeholder="${escapeHTML(placeholder)}">${escapeHTML(value)}</textarea>`
-        : `<input id="field-${key}" name="${key}" type="${type}" value="${escapeHTML(value)}" placeholder="${escapeHTML(placeholder)}" ${type === "number" ? 'min="0" step="0.01"' : ""}>`;
+        : `<input id="field-${key}" name="${key}" type="${type}" value="${escapeHTML(value)}" placeholder="${escapeHTML(placeholder)}" ${type === "number" ? 'min="0" step="0.01"' : ""} ${required ? "required" : ""}>`;
 
       return `<div class="field"><label for="field-${key}">${escapeHTML(label)}</label>${content}</div>`;
     }
 
     function openEditor(title, fields, callback) {
+      editorTrigger = document.activeElement;
       document.getElementById("modalTitle").textContent = title;
       document.getElementById("modalFields").innerHTML = fields.join("");
       editorSaveCallback = callback;
       document.getElementById("modal").classList.add("open");
-      setTimeout(() => document.querySelector("#modalFields input, #modalFields textarea")?.focus(), 30);
+      document.querySelector("#modalFields input, #modalFields textarea")?.focus();
     }
 
     function closeModal() {
       document.getElementById("modal").classList.remove("open");
       editorSaveCallback = null;
+      editorTrigger?.focus();
+      editorTrigger = null;
     }
 
     document.getElementById("editorForm").addEventListener("submit", event => {
       event.preventDefault();
       if (!editorSaveCallback) return;
+      for (const input of event.currentTarget.querySelectorAll('input[type="text"][required]')) {
+        input.value = input.value.trim();
+      }
+      if (!event.currentTarget.reportValidity()) return;
       const values = Object.fromEntries(new FormData(event.currentTarget).entries());
-      editorSaveCallback(values);
+      if (editorSaveCallback(values) === false) return;
       closeModal();
       render();
+    });
+
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && editorSaveCallback) closeModal();
     });
 
     function editSiteName() {
@@ -1295,7 +1471,7 @@
 
     function editOverview() {
       openEditor("編輯旅程總覽", [
-        field("title", "旅程標題", data.overview.title),
+        field("title", "旅程標題", data.overview.title, "text", "", true),
         field("route", "航線／副標題", data.overview.route),
         field("dates", "旅遊日期", data.overview.dates),
         field("departure", "倒數目標時間（含時區）", data.overview.departure, "text", "2026-12-30T08:30:00+08:00")
@@ -1346,14 +1522,14 @@
     function selectDay(index) {
       selectedDay = index;
       renderDays();
+      document.querySelector("#dayTabs .selected")?.focus();
     }
 
     function addDay() {
       openEditor("新增行程日期", [
-        field("label", "日期名稱", "", "text", "例如：Day 5 · 01/03")
+        field("label", "日期名稱", `第 ${data.days.length + 1} 天`, "text", "例如：第 2 天 · 01/03", true)
       ], values => {
-        if (!values.label.trim()) return;
-        data.days.push({ label: values.label.trim(), spots: [] });
+        data.days.push({ label: values.label, spots: [] });
         selectedDay = data.days.length - 1;
         save("日期已新增");
       });
@@ -1361,7 +1537,7 @@
 
     function editDay(index) {
       openEditor("修改日期名稱", [
-        field("label", "日期名稱", data.days[index].label)
+        field("label", "日期名稱", data.days[index].label, "text", "", true)
       ], values => {
         data.days[index].label = values.label;
         save("日期已更新");
@@ -1384,13 +1560,13 @@
       editSpotForm({ time: "", title: "", note: "", address: "", image: "" }, spot => {
         data.days[selectedDay].spots.push(spot);
         save("景點已新增");
-      }, "新增景點");
+      }, "新增景點或活動");
     }
 
     function editSpotForm(spot, callback, title) {
       openEditor(title, [
         field("time", "時間", spot.time, "text", "例如：14:30"),
-        field("title", "景點名稱", spot.title),
+        field("title", "景點或活動名稱", spot.title, "text", "例如：午餐、飯店入住", true),
         field("note", "備註", spot.note, "textarea"),
         field("address", "景點地址（用於 Google Maps 導航）", spot.address, "text", "輸入完整地址"),
         field("image", "景點圖片網址（選填）", spot.image, "url", "https://...")
@@ -1407,7 +1583,7 @@
       editSpotForm(data.days[selectedDay].spots[index], updated => {
         data.days[selectedDay].spots[index] = updated;
         save("景點已更新");
-      }, "編輯景點");
+      }, "編輯景點或活動");
     }
 
     function deleteSpot(index) {
@@ -1415,6 +1591,17 @@
       data.days[selectedDay].spots.splice(index, 1);
       save("景點已刪除");
       render();
+    }
+
+    function moveSpot(index, offset) {
+      const spots = data.days[selectedDay].spots;
+      const destination = index + offset;
+      if (destination < 0 || destination >= spots.length) return;
+      [spots[index], spots[destination]] = [spots[destination], spots[index]];
+      save("景點順序已儲存");
+      renderDays();
+      const nextButton = document.querySelector(`[data-move-spot="${destination},${offset}"]:not(:disabled)`);
+      (nextButton || document.querySelector(`[data-edit-spot="${destination}"]`))?.focus();
     }
 
     function editHotel() {
@@ -1542,18 +1729,20 @@
 
       try {
         const parsed = JSON.parse(await file.text());
-        const importedData = parsed.data || parsed;
-        if (!importedData || typeof importedData !== "object") {
+        const importedData = parsed?.data || parsed;
+        if (!importedData || typeof importedData !== "object" || !Array.isArray(importedData.days)) {
           throw new Error("檔案格式錯誤");
         }
 
-        data = normalizeData(importedData);
-        if (parsed.style && typeof parsed.style === "object") {
+        if (!addTrip(normalizeData(importedData))) return;
+        setEditing(true);
+        if (parsed.style && typeof parsed.style === "object" && !Array.isArray(parsed.style)) {
           style = { ...DEFAULT_STYLE, ...parsed.style };
+          applyStyle();
+          saveStyle("備份已匯入為新旅程");
+        } else {
+          showToast("備份已匯入為新旅程");
         }
-        selectedDay = 0;
-        save("資料已匯入");
-        render();
       } catch {
         alert("匯入失敗。請選擇本網站匯出的 JSON 備份檔。");
       } finally {
@@ -1586,27 +1775,27 @@
 
     function toggleLight() {
       style.light = !style.light;
-      save(style.light ? "已切換明亮模式" : "已切換深色模式");
+      saveStyle(style.light ? "已切換明亮模式" : "已切換深色模式");
       applyStyle();
     }
 
     function toggleGlass() {
       style.glass = !style.glass;
-      save(style.glass ? "毛玻璃效果已開啟" : "毛玻璃效果已關閉");
+      saveStyle(style.glass ? "毛玻璃效果已開啟" : "毛玻璃效果已關閉");
       applyStyle();
     }
 
     function setNeon(color) {
       style.neon = color;
       style.rainbow = false;
-      save("霓虹色彩已更新");
+      saveStyle("霓虹色彩已更新");
       applyStyle();
     }
 
     function toggleRainbow() {
       style.rainbow = !style.rainbow;
       rainbowHue = 195;
-      save(style.rainbow ? "七彩流光已開啟" : "七彩流光已關閉");
+      saveStyle(style.rainbow ? "七彩流光已開啟" : "七彩流光已關閉");
       applyStyle();
     }
 
@@ -1618,7 +1807,6 @@
     }, 35);
 
     render();
-    updateCountdown();
     setInterval(updateCountdown, 1000);
   </script>
 </body>
