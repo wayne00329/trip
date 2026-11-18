@@ -28,9 +28,6 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS trip_state (
-    id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, trips TEXT NOT NULL
-  );
 `);
 
 function validCredentials(user, password) {
@@ -78,25 +75,6 @@ async function configure() {
   console.log('家庭帳密已設定。既有登入已登出。');
 }
 
-function validTrips(trips) {
-  if (!Array.isArray(trips) || trips.length < 1 || trips.length > 100) return false;
-  const ids = new Set();
-  const fields = (record, names) => record && names.every(name => typeof record[name] === 'string');
-  const rows = (items, validate) => Array.isArray(items) && items.every(validate);
-  for (const trip of trips) {
-    if (typeof trip?.id !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(trip.id) || ids.has(trip.id)) return false;
-    ids.add(trip.id);
-    const value = trip.data;
-    if (!fields(value, ['siteName']) || !fields(value.overview, ['title', 'route', 'dates', 'departure']) ||
-        !fields(value.hotel, ['name', 'address', 'note']) || !Number.isFinite(value.budget) ||
-        !rows(value.flights, flight => fields(flight, ['label', 'route', 'note'])) ||
-        !rows(value.days, day => fields(day, ['label']) && rows(day.spots, spot => fields(spot, ['time', 'title', 'note', 'address', 'image']))) ||
-        !rows(value.checklist, item => fields(item, ['title']) && typeof item.done === 'boolean') ||
-        !rows(value.expenses, item => fields(item, ['date', 'title']) && Number.isFinite(item.amount))) return false;
-  }
-  return ids.has('original');
-}
-
 async function readBody(request, limit) {
   const chunks = [];
   let size = 0;
@@ -130,10 +108,6 @@ function start() {
   const cookie = (token, age) => `${cookieName}=${token}; Path=/; Max-Age=${age}; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
   const editorPage = readFileSync(here('index.html'), 'utf8');
   const loginPage = readFileSync(here('login.html'), 'utf8');
-  const seed = JSON.parse(readFileSync(here('default-trip.json'), 'utf8'));
-  db.prepare('INSERT OR IGNORE INTO trip_state VALUES (1, 0, ?)').run(JSON.stringify([{ id: 'original', data: seed }]));
-  const currentState = db.prepare('SELECT revision, trips FROM trip_state WHERE id = 1');
-  const update = db.prepare('UPDATE trip_state SET trips = ?, revision = revision + 1 WHERE id = 1 AND revision = ?');
   const account = db.prepare('SELECT name, salt, hash FROM account WHERE id = 1');
   const findSession = db.prepare('SELECT 1 FROM sessions WHERE token_hash = ? AND expires_at > ?');
   const createSession = db.prepare('INSERT INTO sessions VALUES (?, ?)');
@@ -162,7 +136,7 @@ function start() {
   function accountPage(response, status = 200, error = '', setup = false) {
     const content = setup ? loginPage
       .replaceAll('登入家庭行程', '設定家庭帳密')
-      .replace('使用家人共用的帳號和密碼登入。', '第一次使用，請建立家人共用的帳號和密碼。')
+      .replace('請輸入帳號和密碼以編輯行程。', '第一次使用，請設定網站登入用的帳號和密碼。')
       .replace('action="/login"', 'action="/setup"')
       .replace('autocomplete="current-password"', 'autocomplete="new-password" minlength="12"')
       .replace('<button type="submit">登入</button>', '<label>確認密碼 <input type="password" name="confirmation" autocomplete="new-password" minlength="12" maxlength="128" required></label><button type="submit">建立帳號</button>')
@@ -242,23 +216,13 @@ function start() {
       response.setHeader('Set-Cookie', cookie('', 0));
       return redirect(response, '/login');
     }
-    if (method === 'GET' && (path === '/' || path === '/index.html')) {
-      return session ? send(response, 200, editorPage, 'text/html; charset=utf-8') : redirect(response, '/login');
+    if (method === 'GET' && path === '/api/session') {
+      return session ? response.writeHead(204).end() : send(response, 401, { error: 'sign_in_required' });
     }
-    if (path === '/api/trips' && (method === 'GET' || method === 'PUT')) {
-      if (!session) return send(response, 401, { error: 'sign_in_required' });
-      if (method === 'GET') {
-        const state = currentState.get();
-        return send(response, 200, { revision: state.revision, trips: JSON.parse(state.trips) });
-      }
-      if (request.headers['content-type']?.split(';')[0] !== 'application/json') return send(response, 415, { error: 'unsupported_type' });
-      const body = JSON.parse(await readBody(request, 1024 * 1024));
-      if (!authenticated(request)) return send(response, 401, { error: 'sign_in_required' });
-      if (!Number.isSafeInteger(body?.revision) || body.revision < 0 || !validTrips(body.trips)) {
-        return send(response, 400, { error: 'invalid_trips' });
-      }
-      if (!update.run(JSON.stringify(body.trips), body.revision).changes) return send(response, 409, { error: 'revision_conflict' });
-      return send(response, 200, { revision: body.revision + 1 });
+    if (method === 'GET' && (path === '/' || path === '/index.html')) {
+      if (!session) return redirect(response, '/login');
+      const scope = digest(account.get().name);
+      return send(response, 200, editorPage.replace('__TRIP_ACCOUNT_SCOPE__', scope), 'text/html; charset=utf-8');
     }
     return send(response, 404, { error: 'not_found' });
   }

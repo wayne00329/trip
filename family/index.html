@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#081426">
-  <title>家庭行程</title>
+  <title>旅</title>
 
   <style>
     :root {
@@ -408,27 +408,9 @@
       font-size: .82rem;
     }
 
+    body [hidden] { display: none !important; }
     body:not(.ready) > header,
-    body:not(.ready) > main {
-      display: none;
-    }
-
-    .sync-panel {
-      position: fixed;
-      z-index: 100;
-      right: 14px;
-      bottom: 14px;
-      width: min(430px, calc(100% - 28px));
-      padding: 17px;
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      background: var(--card-solid);
-      box-shadow: 0 10px 30px var(--shadow);
-    }
-
-    .sync-panel p { margin: 0 0 8px; }
-    .sync-panel [hidden] { display: none; }
-    .sync-panel a { color: var(--text); }
+    body:not(.ready) > main { display: none; }
 
     #overview [hidden] {
       display: none;
@@ -796,24 +778,24 @@
   </style>
 </head>
 
-<body class="editing">
+<body class="editing" data-storage-scope="__TRIP_ACCOUNT_SCOPE__">
   <header>
     <div class="header-inner">
       <div class="brand">
         <span class="brand-mark">旅</span>
         <span id="siteName">旅</span>
-        <button class="edit-only small-button" onclick="editSiteName()">改名稱</button>
+        <button class="edit-only small-button" data-trip-required onclick="editSiteName()" hidden>改名稱</button>
       </div>
       <div class="header-actions">
         <button onclick="openStyle()">🎨 風格</button>
-        <button onclick="exportData()">⬇️ 匯出</button>
+        <button data-trip-required onclick="exportData()" hidden>⬇️ 匯出</button>
         <button onclick="document.getElementById('importFile').click()">⬆️ 匯入</button>
-        <button id="editToggle" onclick="toggleEdit()">預覽行程</button>
+        <button id="editToggle" data-trip-required onclick="toggleEdit()" hidden>預覽行程</button>
         <form method="post" action="/logout"><button type="submit">登出</button></form>
       </div>
     </div>
 
-    <nav class="nav">
+    <nav class="nav" data-trip-required hidden>
       <a href="#overview">總覽</a>
       <a href="#flights">航班</a>
       <a href="#itinerary">行程</a>
@@ -828,16 +810,17 @@
   <main>
     <section class="card trip-toolbar" aria-label="旅程管理">
       <label class="trip-picker" for="tripSelect">
-        家庭共用旅程
-        <select id="tripSelect" onchange="switchTrip(this.value)"></select>
+        我的旅程
+        <select id="tripSelect" onchange="switchTrip(this.value)" disabled><option>還沒有旅程</option></select>
       </label>
       <div class="button-row">
         <button id="newTripButton" class="primary" onclick="newTrip()">＋ 新增旅程</button>
         <button id="deleteTripButton" class="danger" onclick="deleteTrip()" hidden>刪除旅程</button>
       </div>
-      <p class="sub trip-storage">儲存後，登入同一帳號的家人會看到更新。</p>
+      <p class="sub trip-storage">行程儲存在這個瀏覽器。</p>
     </section>
 
+    <div data-trip-required hidden>
     <section id="overview" class="card hero-card">
       <div class="hero-top">
         <div>
@@ -892,7 +875,7 @@
       <div class="card-heading">
         <div>
           <h2>💰 旅費管理</h2>
-          <div class="sub" style="font-size:.8rem;margin-top:3px">支出會和家人同步</div>
+          <div class="sub" style="font-size:.8rem;margin-top:3px">支出僅保存在目前瀏覽器</div>
         </div>
         <div class="button-row">
           <button class="edit-only" onclick="editBudget()">設定預算</button>
@@ -922,9 +905,10 @@
     </section>
 
     <div class="notice">
-      💾 換裝置時，登入相同的家庭帳號即可查看共用行程。「匯出」可下載目前旅程的備份。
+      💾 換裝置時，先「匯出」目前旅程，再於新裝置「匯入」備份。每個備份檔包含一趟旅程。
     </div>
 
+    </div>
     <footer>✦ 願每一段旅程，都有值得收藏的風景 ✦</footer>
   </main>
 
@@ -981,20 +965,11 @@
     </section>
   </div>
 
-  <section class="sync-panel" id="syncPanel" aria-label="同步狀態">
-    <p id="syncMessage" role="status">正在載入家庭行程…</p>
-    <div class="button-row">
-      <button id="syncRetry" onclick="retrySync()" hidden>重試儲存</button>
-      <button id="syncDraft" onclick="downloadDraft()" hidden>下載未儲存的旅程</button>
-      <button id="syncReload" onclick="reloadSharedTrips()" hidden>載入共用版本</button>
-      <a id="syncLogin" href="/login" hidden>重新登入</a>
-    </div>
-  </section>
   <div id="toast" class="toast" role="status"></div>
 
   <script>
     const DEFAULT_DATA = {
-      siteName: "旅",
+      siteName: "",
       overview: { title: "", route: "", dates: "", departure: "" },
       flights: [],
       days: [],
@@ -1010,6 +985,8 @@
       rainbow: false,
       neon: "#38bdf8"
     };
+
+    const TRIPS_KEY = `trip_editor:${document.body.dataset.storageScope}`;
 
     const clone = value => JSON.parse(JSON.stringify(value));
 
@@ -1028,12 +1005,11 @@
       const list = (value, fallback) => Array.isArray(value)
         ? value.filter(item => item && typeof item === "object" && !Array.isArray(item))
         : fallback;
-      const strings = (value, keys) => Object.fromEntries(keys.map(key => [key, String(value[key] ?? "")]));
 
       return {
         siteName: typeof data.siteName === "string" ? data.siteName : base.siteName,
         overview: Object.fromEntries(Object.entries(base.overview).map(([key, value]) => [key, String(data.overview?.[key] ?? value)])),
-        flights: list(data.flights, base.flights).map(flight => strings(flight, ["label", "route", "note"])),
+        flights: list(data.flights, base.flights),
         days: list(data.days, base.days).map(day => ({
           label: String(day.label ?? "未命名日期"),
           spots: list(day.spots, []).map(spot => ({
@@ -1049,20 +1025,18 @@
           address: String(data.hotel?.address ?? base.hotel.address),
           note: String(data.hotel?.note ?? base.hotel.note)
         },
-        checklist: list(data.checklist, base.checklist).map(item => ({ title: String(item.title ?? ""), done: !!item.done })),
-        budget: Number.isFinite(Number(data.budget)) ? Number(data.budget) : 0,
-        expenses: list(data.expenses, []).map(item => ({
-          ...strings(item, ["date", "title"]), amount: Number.isFinite(Number(item.amount)) ? Number(item.amount) : 0
-        }))
+        checklist: list(data.checklist, base.checklist),
+        budget: Number(data.budget) || 0,
+        expenses: list(data.expenses, [])
       };
     }
 
-    let trips = [];
-    let revision = null;
-    let pending = false;
-    let syncFailure = null;
-    let activeTrip;
-    let data;
+    const storedTrips = readStorage(TRIPS_KEY, null);
+    let tripsSnapshot = JSON.stringify(storedTrips);
+    let trips = Array.isArray(storedTrips?.trips)
+      ? storedTrips.trips.map(trip => ({ id: trip.id, data: normalizeData(trip.data) })) : [];
+    let activeTrip = trips.find(trip => trip.id === storedTrips?.activeId) || trips[0] || null;
+    let data = activeTrip?.data;
     let style = { ...DEFAULT_STYLE, ...readStorage("hk27_style", DEFAULT_STYLE) };
     let selectedDay = 0;
     let rainbowHue = 195;
@@ -1091,123 +1065,24 @@
       }
     }
 
-    function showSync(message = "", { draft = false, retry = false, reload = false, login = false } = {}) {
-      document.getElementById("syncMessage").textContent = message;
-      document.getElementById("syncDraft").hidden = !draft;
-      document.getElementById("syncRetry").hidden = !retry;
-      document.getElementById("syncReload").hidden = !reload;
-      document.getElementById("syncLogin").hidden = !login;
-      document.getElementById("syncPanel").hidden = !message;
-    }
-
-    function setPending(value) {
-      pending = value;
-      for (const element of document.querySelectorAll("body > header, body > main, #modal, #styleModal")) {
-        element.inert = value || !!syncFailure;
-      }
-    }
-
-    function useSharedTrips(nextTrips, preferredId = activeTrip?.id) {
-      trips = nextTrips;
-      const trip = trips.find(item => item.id === preferredId) || trips[0];
-      if (trip.id !== activeTrip?.id) selectedDay = 0;
-      activeTrip = trip;
-      data = trip.data;
-      document.body.classList.add("ready");
-      render();
-    }
-
-    async function refreshSharedTrips(force = false) {
-      if (pending || (!force && (syncFailure || editorSaveCallback || document.hidden))) return;
-      const previousRevision = revision;
-      if (force) {
-        setPending(true);
-        showSync("正在載入家庭行程…");
-      }
+    function writeTrips(nextTrips, nextActiveTrip) {
       try {
-        const response = await fetch("/api/trips", { signal: AbortSignal.timeout(10000) });
-        if (!force && (pending || syncFailure || editorSaveCallback || previousRevision !== revision)) return;
-        if (response.status === 401) {
-          setPending(true);
-          showSync("登入已失效，請重新登入。", { draft: !!syncFailure, login: true });
-          return;
+        if (JSON.stringify(readStorage(TRIPS_KEY, null)) !== tripsSnapshot) {
+          showToast("另一個分頁已更新行程。請先匯出未儲存的變更，再重新整理。");
+          return false;
         }
-        if (!response.ok) throw new Error("read failed");
-        const result = await response.json();
-        if (!force && (pending || syncFailure || editorSaveCallback || previousRevision !== revision)) return;
-        if (force || result.revision !== revision) {
-          const changed = revision !== null;
-          revision = result.revision;
-          syncFailure = null;
-          closeModal();
-          useSharedTrips(result.trips.map(trip => ({ id: trip.id, data: normalizeData(trip.data) })));
-          showSync();
-          if (changed) showToast("已載入最新的共用行程");
-        }
+        const serialized = JSON.stringify({ trips: nextTrips, activeId: nextActiveTrip?.id ?? null });
+        localStorage.setItem(TRIPS_KEY, serialized);
+        tripsSnapshot = serialized;
+        return true;
       } catch {
-        if (force) showSync("目前無法載入共用行程。", { draft: !!syncFailure, reload: true });
-      } finally {
-        if (force) setPending(false);
+        showToast("無法儲存，請檢查瀏覽器的儲存設定或空間");
+        return false;
       }
     }
 
-    async function writeTrips(nextTrips, nextActiveTrip) {
-      if (pending || syncFailure) return false;
-      const draft = { trips: clone(nextTrips), activeId: nextActiveTrip.id };
-      setPending(true);
-      showSync("正在儲存共用行程…");
-      let reason;
-      try {
-        const response = await fetch("/api/trips", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ revision, trips: draft.trips }),
-          signal: AbortSignal.timeout(10000)
-        });
-        if (response.ok) {
-          revision = (await response.json()).revision;
-          showSync();
-          return true;
-        }
-        reason = response.status;
-      } catch {
-        reason = 0;
-      } finally {
-        if (reason !== undefined) syncFailure = { ...draft, reason };
-        setPending(false);
-      }
-      if (reason === 409) {
-        showSync("家人剛儲存了更新。你的修改尚未上傳，可先下載備份，再載入共用版本。", { draft: true, reload: true });
-      } else if (reason === 401) {
-        showSync("登入已失效。請先下載未儲存的旅程，再重新登入。", { draft: true, login: true });
-      } else if ([400, 413].includes(reason)) {
-        showSync("這筆資料無法儲存。請先下載備份，再載入共用版本。", { draft: true, reload: true });
-      } else {
-        showSync("目前無法儲存，請重試。", { draft: true, retry: true, reload: true });
-      }
-      return false;
-    }
-
-    function reloadSharedTrips() {
-      if (syncFailure && !confirm("要載入共用版本並清除這次未儲存的修改嗎？")) return;
-      void refreshSharedTrips(true);
-    }
-
-    async function retrySync() {
-      const draft = syncFailure;
-      if (!draft || pending) return;
-      syncFailure = null;
-      const trip = draft.trips.find(item => item.id === draft.activeId);
-      if (!await writeTrips(draft.trips, trip)) return;
-      closeModal();
-      useSharedTrips(draft.trips, draft.activeId);
-      showToast("已儲存共用行程");
-    }
-
-    async function save(message = "已儲存") {
-      const saved = await writeTrips(trips, activeTrip);
-      if (saved) showToast(message);
-      return saved;
+    function save(message = "已儲存") {
+      if (writeTrips(trips, activeTrip)) showToast(message);
     }
 
     function saveStyle(message) {
@@ -1221,7 +1096,7 @@
 
     function activateTrip(trip) {
       activeTrip = trip;
-      data = trip.data;
+      data = trip?.data;
       selectedDay = 0;
       render();
     }
@@ -1229,22 +1104,23 @@
     function switchTrip(id) {
       const trip = trips.find(item => item.id === id);
       if (!trip || trip === activeTrip) return;
-      activateTrip(trip);
+      if (writeTrips(trips, trip)) activateTrip(trip);
+      else document.getElementById("tripSelect").value = activeTrip?.id || "";
     }
 
-    async function addTrip(tripData) {
-      const id = crypto.randomUUID();
+    function addTrip(tripData) {
+      const id = String(trips.reduce((max, trip) => Math.max(max, Number(trip.id) || 0), 0) + 1);
       const trip = { id, data: tripData };
       const nextTrips = [...trips, trip];
-      if (!await writeTrips(nextTrips, trip)) return false;
+      if (!writeTrips(nextTrips, trip)) return false;
       trips = nextTrips;
       activateTrip(trip);
       return true;
     }
 
     function newTrip() {
-      openEditor("新增旅程", [field("title", "旅程名稱", "", "text", "例如：京都四日遊", true)], async values => {
-        const created = await addTrip({
+      openEditor("新增旅程", [field("title", "旅程名稱", "", "text", "例如：京都四日遊", true)], values => {
+        const created = addTrip({
           siteName: "旅",
           overview: { title: values.title, route: "", dates: "", departure: "" },
           flights: [],
@@ -1260,16 +1136,16 @@
       });
     }
 
-    async function deleteTrip() {
-      if (activeTrip.id === "original") return;
+    function deleteTrip() {
+      if (!activeTrip) return;
       const title = data.overview.title || "未命名旅程";
       if (!confirm(`確定刪除「${title}」及其中的所有行程嗎？`)) return;
       const nextTrips = trips.filter(trip => trip !== activeTrip);
-      const nextActiveTrip = nextTrips[0];
-      if (!await writeTrips(nextTrips, nextActiveTrip)) return;
+      const nextActiveTrip = nextTrips[0] || null;
+      if (!writeTrips(nextTrips, nextActiveTrip)) return;
       trips = nextTrips;
       activateTrip(nextActiveTrip);
-      document.getElementById("tripSelect").focus();
+      document.getElementById(nextActiveTrip ? "tripSelect" : "newTripButton").focus();
       showToast("旅程已刪除");
     }
 
@@ -1294,15 +1170,20 @@
     }
 
     function render() {
-      if (!data.days.length) data.days.push({ label: "新的一天", spots: [] });
-      selectedDay = Math.max(0, Math.min(selectedDay, data.days.length - 1));
-
       const tripSelect = document.getElementById("tripSelect");
-      tripSelect.replaceChildren(...trips.map(trip => new Option(trip.data.overview.title || "未命名旅程", trip.id)));
-      tripSelect.value = activeTrip.id;
-      document.getElementById("deleteTripButton").hidden = activeTrip.id === "original";
-      document.getElementById("siteName").textContent = data.siteName || "旅";
-      document.title = data.siteName || "旅";
+      const options = trips.map(trip => new Option(trip.data.overview.title || "未命名旅程", trip.id));
+      tripSelect.replaceChildren(...(options.length ? options : [new Option("還沒有旅程", "")]));
+      tripSelect.value = activeTrip?.id || "";
+      tripSelect.disabled = !activeTrip;
+      for (const element of document.querySelectorAll("[data-trip-required]")) element.hidden = !activeTrip;
+      document.getElementById("deleteTripButton").hidden = !activeTrip;
+      document.getElementById("siteName").textContent = data?.siteName || "旅";
+      document.title = data?.siteName || "旅程編輯";
+      applyStyle();
+      if (!data) return;
+
+      if (!data.days.length) data.days.push({ label: "第 1 天", spots: [] });
+      selectedDay = Math.max(0, Math.min(selectedDay, data.days.length - 1));
       document.getElementById("overviewTitle").textContent = data.overview.title;
       document.getElementById("overviewRoute").textContent = data.overview.route;
       document.getElementById("overviewDates").textContent = data.overview.dates;
@@ -1314,7 +1195,6 @@
       renderHotel();
       renderBudget();
       renderChecklist();
-      applyStyle();
       updateCountdown();
     }
 
@@ -1467,6 +1347,7 @@
     }
 
     function updateCountdown() {
+      if (!data) return;
       const target = new Date(data.overview.departure).getTime();
       if (!Number.isFinite(target)) {
         ["cdDays", "cdHours", "cdMinutes", "cdSeconds"].forEach(id => {
@@ -1525,21 +1406,21 @@
       editorTrigger = null;
     }
 
-    document.getElementById("editorForm").addEventListener("submit", async event => {
+    document.getElementById("editorForm").addEventListener("submit", event => {
       event.preventDefault();
-      if (!editorSaveCallback || pending || syncFailure) return;
+      if (!editorSaveCallback) return;
       for (const input of event.currentTarget.querySelectorAll('input[type="text"][required]')) {
         input.value = input.value.trim();
       }
       if (!event.currentTarget.reportValidity()) return;
       const values = Object.fromEntries(new FormData(event.currentTarget).entries());
-      if (await editorSaveCallback(values) === false) return;
+      if (editorSaveCallback(values) === false) return;
       closeModal();
       render();
     });
 
     document.addEventListener("keydown", event => {
-      if (event.key === "Escape" && editorSaveCallback && !pending && !syncFailure) closeModal();
+      if (event.key === "Escape" && editorSaveCallback) closeModal();
     });
 
     function editSiteName() {
@@ -1547,7 +1428,7 @@
         field("name", "頁面最上方名稱", data.siteName, "text", "例如：旅")
       ], values => {
         data.siteName = values.name.trim() || "旅";
-        return save("頁面名稱已更新");
+        save("頁面名稱已更新");
       });
     }
 
@@ -1564,14 +1445,14 @@
           dates: values.dates,
           departure: values.departure
         };
-        return save();
+        save();
       });
     }
 
     function addFlight() {
       editFlightForm({ label: "", route: "", note: "" }, flight => {
         data.flights.push(flight);
-        return save("航班已新增");
+        save("航班已新增");
       }, "新增航班");
     }
 
@@ -1590,7 +1471,7 @@
     function editFlight(index) {
       editFlightForm(data.flights[index], updated => {
         data.flights[index] = updated;
-        return save("航班已更新");
+        save("航班已更新");
       }, "編輯航班");
     }
 
@@ -1613,7 +1494,7 @@
       ], values => {
         data.days.push({ label: values.label, spots: [] });
         selectedDay = data.days.length - 1;
-        return save("日期已新增");
+        save("日期已新增");
       });
     }
 
@@ -1622,7 +1503,7 @@
         field("label", "日期名稱", data.days[index].label, "text", "", true)
       ], values => {
         data.days[index].label = values.label;
-        return save("日期已更新");
+        save("日期已更新");
       });
     }
 
@@ -1641,7 +1522,7 @@
     function addSpot() {
       editSpotForm({ time: "", title: "", note: "", address: "", image: "" }, spot => {
         data.days[selectedDay].spots.push(spot);
-        return save("景點已新增");
+        save("景點已新增");
       }, "新增景點或活動");
     }
 
@@ -1664,7 +1545,7 @@
     function editSpot(index) {
       editSpotForm(data.days[selectedDay].spots[index], updated => {
         data.days[selectedDay].spots[index] = updated;
-        return save("景點已更新");
+        save("景點已更新");
       }, "編輯景點或活動");
     }
 
@@ -1697,7 +1578,7 @@
           address: values.address,
           note: values.note
         };
-        return save("住宿資訊已更新");
+        save("住宿資訊已更新");
       });
     }
 
@@ -1706,7 +1587,7 @@
         field("budget", "預算金額", data.budget, "number")
       ], values => {
         data.budget = Number(values.budget) || 0;
-        return save("預算已更新");
+        save("預算已更新");
       });
     }
 
@@ -1717,7 +1598,7 @@
         amount: ""
       }, expense => {
         data.expenses.push(expense);
-        return save("支出已新增");
+        save("支出已新增");
       }, "新增一筆支出");
     }
 
@@ -1736,7 +1617,7 @@
     function editExpense(index) {
       editExpenseForm(data.expenses[index], updated => {
         data.expenses[index] = updated;
-        return save("支出已更新");
+        save("支出已更新");
       }, "編輯支出");
     }
 
@@ -1753,7 +1634,7 @@
       ], values => {
         if (!values.title.trim()) return;
         data.checklist.push({ title: values.title.trim(), done: false });
-        return save("清單項目已新增");
+        save("清單項目已新增");
       });
     }
 
@@ -1762,7 +1643,7 @@
         field("title", "項目名稱", data.checklist[index].title)
       ], values => {
         data.checklist[index].title = values.title;
-        return save("清單項目已更新");
+        save("清單項目已更新");
       });
     }
 
@@ -1786,21 +1667,11 @@
     }
 
     function exportData() {
-      exportTrip(data);
-    }
-
-    function downloadDraft() {
-      if (!syncFailure) return;
-      const draft = syncFailure.trips.find(trip => trip.id === syncFailure.activeId);
-      exportTrip(draft.data);
-    }
-
-    function exportTrip(tripData) {
       const backup = {
         format: "travel-journal",
         version: 1,
         exportedAt: new Date().toISOString(),
-        data: tripData,
+        data,
         style
       };
       const blob = new Blob([JSON.stringify(backup, null, 2)], {
@@ -1826,7 +1697,7 @@
           throw new Error("檔案格式錯誤");
         }
 
-        if (!await addTrip(normalizeData(importedData))) return;
+        if (!addTrip(normalizeData(importedData))) return;
         setEditing(true);
         if (parsed.style && typeof parsed.style === "object" && !Array.isArray(parsed.style)) {
           style = { ...DEFAULT_STYLE, ...parsed.style };
@@ -1898,12 +1769,29 @@
       document.documentElement.style.setProperty("--neon", `hsl(${rainbowHue} 95% 65%)`);
     }, 35);
 
-    void refreshSharedTrips(true);
-    setInterval(() => { if (data) updateCountdown(); }, 1000);
-    setInterval(refreshSharedTrips, 5000);
-    window.addEventListener("pageshow", event => {
-      if (event.persisted) location.reload();
-    });
+    async function checkSession() {
+      try {
+        const response = await fetch("/api/session");
+        if (response.status === 401) location.replace("/login");
+      } catch {
+        // Existing edits remain available in this browser during a temporary disconnect.
+      }
+    }
+
+    if (/^[a-f0-9]{64}$/.test(document.body.dataset.storageScope)) {
+      render();
+      document.body.classList.add("ready");
+      setInterval(updateCountdown, 1000);
+      setInterval(checkSession, 30000);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) void checkSession();
+      });
+      window.addEventListener("pageshow", event => {
+        if (event.persisted) location.reload();
+      });
+    } else {
+      location.replace("http://127.0.0.1:4173/login");
+    }
   </script>
 </body>
 </html>
