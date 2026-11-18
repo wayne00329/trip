@@ -1,0 +1,14 @@
+name = "family-trip-wayne00329"
+main = "worker.mjs"
+compatibility_date = "2026-08-04"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = false
+
+[[durable_objects.bindings]]
+name = "AUTH"
+class_name = "TripAuth"
+
+[[migrations]]
+tag = "auth-v1"
+new_sqlite_classes = ["TripAuth"]

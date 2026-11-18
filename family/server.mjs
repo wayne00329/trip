@@ -7,12 +7,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { SECURITY_HEADERS, SESSION_SECONDS, TOKEN_PATTERN } from './security.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const dataDirectory = resolve(process.env.TRIP_DATA_DIR || fileURLToPath(here('.data/')));
 const deriveKey = promisify(scrypt);
 const digest = value => createHash('sha256').update(value).digest('hex');
-const sessionSeconds = 7 * 24 * 60 * 60;
 const passwordKeyLength = 64;
 const credentialLengthError = '帳號須為 1–64 個字元，密碼須為 12–128 個字元。';
 const isLoopback = host => ['127.0.0.1', 'localhost', '::1', '[::1]', '::ffff:127.0.0.1'].includes(host);
@@ -119,7 +119,7 @@ function start() {
   function authenticated(request) {
     const entry = request.headers.cookie?.split(';').map(part => part.trim()).find(part => part.startsWith(`${cookieName}=`));
     const token = entry?.slice(cookieName.length + 1);
-    if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
+    if (!token || !TOKEN_PATTERN.test(token)) return null;
     const hash = digest(token);
     return findSession.get(hash, Date.now()) ? hash : null;
   }
@@ -145,10 +145,7 @@ function start() {
   }
 
   async function handle(request, response) {
-    response.setHeader('Cache-Control', 'no-store');
-    response.setHeader('X-Content-Type-Options', 'nosniff');
-    response.setHeader('Referrer-Policy', 'same-origin');
-    response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src https: http:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) response.setHeader(name, value);
     const path = new URL(request.url, publicUrl).pathname;
     const method = request.method;
     const session = authenticated(request);
@@ -207,8 +204,8 @@ function start() {
       if (session) deleteSession.run(session);
       expireSessions.run(now);
       const token = randomBytes(32).toString('hex');
-      createSession.run(digest(token), now + sessionSeconds * 1000);
-      response.setHeader('Set-Cookie', cookie(token, sessionSeconds));
+      createSession.run(digest(token), now + SESSION_SECONDS * 1000);
+      response.setHeader('Set-Cookie', cookie(token, SESSION_SECONDS));
       return redirect(response, '/');
     }
     if (method === 'POST' && path === '/logout') {
