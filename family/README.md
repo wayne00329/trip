@@ -4,6 +4,14 @@
 
 正式網址是 [家庭行程](https://family-trip-wayne00329.wayne00329-travel.workers.dev/)。GitHub Pages 首頁會連到 Cloudflare 的登入頁。本機網址上的既有行程會保留在原本的瀏覽器與網址。
 
+## 邀請家人註冊
+
+1. 用原本的家庭帳號登入正式網站，點「邀請家人」和「產生邀請碼」。
+2. 私下把邀請碼交給家人。每組只能使用一次，7 天後失效。
+3. 家人在登入頁展開「註冊帳號」，用邀請碼建立自己的帳密。
+
+每個帳號的行程會在瀏覽器內分開儲存。邀請功能在 Cloudflare 的正式網站使用。
+
 ## 在 Windows 本機試用
 
 在檔案總管雙擊 `start-family.cmd`，或從 `C:\trip` 開啟 PowerShell，使用 Node.js 24 執行以下指令。

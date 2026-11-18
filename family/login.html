@@ -46,6 +46,13 @@
     button:hover { background: #8bddfa; }
     :focus-visible { outline: 3px solid #a6e5ff; outline-offset: 3px; }
     .error { margin-top: 16px; color: #fecaca; }
+    details { margin-top: 22px; border-top: 1px solid #335169; padding-top: 16px; }
+    summary { color: #a6e5ff; font-weight: 750; cursor: pointer; }
+    details p { margin-top: 10px; }
+    a { color: #a6e5ff; }
+    .account-back { display: inline-block; margin-top: 20px; }
+    .invite-code { display: grid; gap: 6px; margin-top: 16px; }
+    .invite-code input { font-family: ui-monospace, Consolas, monospace; width: 100%; }
   </style>
 </head>
 <body>
@@ -59,6 +66,7 @@
       <label>密碼 <input type="password" name="password" autocomplete="current-password" maxlength="128" required></label>
       <button type="submit">登入</button>
     </form>
+    <!-- REGISTER_FORM -->
   </main>
 </body>
 </html>

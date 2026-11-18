@@ -162,6 +162,19 @@
       gap: 7px;
     }
 
+    .account-action {
+      padding: 8px 13px;
+      border: 2px solid var(--border);
+      border-radius: 999px;
+      color: var(--text);
+      background: var(--pill);
+      font-size: .85rem;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .account-action:hover, .account-action:focus-visible { border-color: var(--neon); }
+
     .nav {
       display: flex;
       gap: 7px;
@@ -735,7 +748,7 @@
         align-items: flex-start;
       }
 
-      .header-actions button {
+      .header-actions button, .header-actions .account-action {
         padding: 7px 9px;
         font-size: .77rem;
       }
@@ -855,6 +868,7 @@
         <button data-trip-required onclick="exportPDF()" hidden>匯出 PDF</button>
         <button onclick="document.getElementById('importFile').click()">匯入備份</button>
         <button id="editToggle" data-trip-required onclick="toggleEdit()" hidden>預覽行程</button>
+        <!-- TRIP_ACCOUNT_ACTIONS -->
         <form method="post" action="/logout"><button type="submit">登出</button></form>
       </div>
     </div>
