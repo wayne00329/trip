@@ -7,6 +7,7 @@ import { SECURITY_HEADERS, SESSION_SECONDS, TOKEN_PATTERN } from './security.mjs
 
 const COOKIE = '__Host-family-trip';
 const MAX_FORM_BYTES = 4096;
+const MAX_TRIP_BYTES = 1024 * 1024;
 const INVITATION_VALID_MS = 7 * 24 * 60 * 60 * 1000;
 const digest = value => createHash('sha256').update(value).digest('hex');
 
@@ -42,6 +43,9 @@ export class TripAuth extends DurableObject {
       );
       CREATE TABLE IF NOT EXISTS invitations (
         code_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS trip_collections (
+        account_scope TEXT PRIMARY KEY, revision INTEGER NOT NULL, trips_json TEXT NOT NULL
       );
     `);
     const columns = this.db.exec('PRAGMA table_info(sessions)').toArray();
@@ -109,6 +113,28 @@ export class TripAuth extends DurableObject {
     if (!account || session.account_version !== digest(account.hash)) return null;
     const key = owner ? account.name : `registered\0${account.name}`;
     return { owner, scope: digest(key) };
+  }
+
+  loadTrips(token) {
+    const account = this.sessionAccount(token);
+    if (!account) return null;
+    const current = this.db.exec('SELECT revision, trips_json FROM trip_collections WHERE account_scope = ?', account.scope).toArray()[0];
+    return current ? { revision: current.revision, trips: JSON.parse(current.trips_json) } : { revision: 0, trips: [] };
+  }
+
+  saveTrips(token, expectedRevision, tripsJson) {
+    const account = this.sessionAccount(token);
+    if (!account) return { status: 401 };
+    return this.ctx.storage.transactionSync(() => {
+      const row = this.db.exec('SELECT revision FROM trip_collections WHERE account_scope = ?', account.scope).toArray()[0];
+      const revision = row?.revision ?? 0;
+      if (revision !== expectedRevision) return { status: 409 };
+      const nextRevision = revision + 1;
+      this.db.exec(`INSERT INTO trip_collections (account_scope, revision, trips_json) VALUES (?, ?, ?)
+        ON CONFLICT(account_scope) DO UPDATE SET revision = excluded.revision, trips_json = excluded.trips_json`,
+        account.scope, nextRevision, tripsJson);
+      return { status: 200, revision: nextRevision };
+    });
   }
 
   createInvitation(token) {
@@ -200,25 +226,37 @@ function invitationPage(code = '') {
   return response(page, 200, { 'Content-Type': 'text/html; charset=utf-8' });
 }
 
-async function readForm(request) {
+async function readBody(request, limit) {
   const reader = request.body?.getReader();
-  if (!reader) return new URLSearchParams();
-  const bytes = new Uint8Array(MAX_FORM_BYTES);
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  let body = '';
   let size = 0;
   try {
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) return new URLSearchParams(new TextDecoder().decode(bytes.subarray(0, size)));
-      if (size + value.length > bytes.length) {
+      if (done) return body + decoder.decode();
+      size += value.length;
+      if (size > limit) {
         await reader.cancel();
         return null;
       }
-      bytes.set(value, size);
-      size += value.length;
+      body += decoder.decode(value, { stream: true });
     }
   } finally {
     reader.releaseLock();
   }
+}
+
+function validTripCollection(trips) {
+  if (!Array.isArray(trips)) return false;
+  const ids = new Set();
+  for (const trip of trips) {
+    if (typeof trip?.id !== 'string' || !/^[A-Za-z0-9-]{1,64}$/.test(trip.id) || ids.has(trip.id) ||
+        !trip.data || typeof trip.data !== 'object' || Array.isArray(trip.data)) return false;
+    ids.add(trip.id);
+  }
+  return true;
 }
 
 export default {
@@ -229,11 +267,36 @@ export default {
     const session = TOKEN_PATTERN.test(token || '') ? token : null;
     const auth = env.AUTH.getByName('family-account');
 
-    if (request.method === 'POST' && request.headers.get('Origin') !== url.origin) return response('Forbidden', 403);
+    if ((request.method === 'POST' || request.method === 'PUT') && request.headers.get('Origin') !== url.origin) return response('Forbidden', 403);
+    if (url.pathname === '/api/trips' && (request.method === 'GET' || request.method === 'PUT')) {
+      if (!session) return response('Sign-in required', 401);
+      const json = { 'Content-Type': 'application/json; charset=utf-8' };
+      if (request.method === 'GET') {
+        const collection = await auth.loadTrips(session);
+        return collection ? response(JSON.stringify(collection), 200, json) : response('Sign-in required', 401);
+      }
+      if (request.headers.get('Content-Type')?.split(';')[0] !== 'application/json') return response('Unsupported format', 415);
+      const body = await readBody(request, MAX_TRIP_BYTES);
+      if (body === null) return response('Trip collection too large', 413);
+      let collection;
+      let serialized;
+      try {
+        collection = JSON.parse(body);
+        if (!Number.isSafeInteger(collection?.revision) || collection.revision < 0 || !validTripCollection(collection.trips)) {
+          return response('Invalid trip collection', 400);
+        }
+        serialized = JSON.stringify(collection.trips);
+      } catch {
+        return response('Invalid trip collection', 400);
+      }
+      const saved = await auth.saveTrips(session, collection.revision, serialized);
+      return saved.status === 200 ? response(JSON.stringify({ revision: saved.revision }), 200, json) : response(null, saved.status);
+    }
     if (request.method === 'POST' && (url.pathname === '/login' || url.pathname === '/register')) {
       if (!request.headers.get('Content-Type')?.startsWith('application/x-www-form-urlencoded')) return response('Unsupported format', 415);
-      const form = await readForm(request);
-      if (!form) return response('Request too large', 413);
+      const body = await readBody(request, MAX_FORM_BYTES);
+      if (body === null) return response('Request too large', 413);
+      const form = new URLSearchParams(body);
       const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
       const name = form.get('username')?.trim() || '';
       const password = form.get('password') || '';
@@ -281,7 +344,9 @@ export default {
       const account = session ? await auth.sessionAccount(session) : null;
       if (!account) return redirect('/login');
       const actions = account.owner ? '<a class="account-action" href="/invitations">邀請家人</a>' : '';
-      const page = editorPage.replace('__TRIP_ACCOUNT_SCOPE__', account.scope).replace('<!-- TRIP_ACCOUNT_ACTIONS -->', actions);
+      const page = editorPage.replace('__TRIP_ACCOUNT_SCOPE__', account.scope)
+        .replace('data-cloud-sync="disabled"', 'data-cloud-sync="enabled"')
+        .replace('<!-- TRIP_ACCOUNT_ACTIONS -->', actions);
       return response(page, 200, { 'Content-Type': 'text/html; charset=utf-8' });
     }
     return response('Not found', 404);

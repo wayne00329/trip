@@ -855,7 +855,7 @@
   </style>
 </head>
 
-<body class="editing" data-storage-scope="__TRIP_ACCOUNT_SCOPE__">
+<body class="editing" data-storage-scope="__TRIP_ACCOUNT_SCOPE__" data-cloud-sync="disabled">
   <header>
     <div class="header-inner">
       <div class="brand">
@@ -895,7 +895,7 @@
         <button id="newTripButton" class="primary" onclick="newTrip()">＋ 新增旅程</button>
         <button id="deleteTripButton" class="danger" onclick="deleteTrip()" hidden>刪除旅程</button>
       </div>
-      <p class="sub trip-storage">行程儲存在這個瀏覽器。</p>
+      <p id="tripStorage" class="sub trip-storage" role="status">行程儲存在這個瀏覽器。</p>
     </section>
 
     <div data-trip-required hidden>
@@ -953,7 +953,7 @@
       <div class="card-heading">
         <div>
           <h2>💰 旅費管理</h2>
-          <div class="sub" style="font-size:.8rem;margin-top:3px">支出僅保存在目前瀏覽器</div>
+          <div id="budgetStorage" class="sub" style="font-size:.8rem;margin-top:3px">支出儲存在目前瀏覽器</div>
         </div>
         <div class="button-row">
           <button class="edit-only" onclick="editBudget()">設定預算</button>
@@ -1083,6 +1083,7 @@
     };
 
     const TRIPS_KEY = `trip_editor:${document.body.dataset.storageScope}`;
+    const CLOUD_SYNC_ENABLED = document.body.dataset.cloudSync === "enabled";
 
     const clone = value => JSON.parse(JSON.stringify(value));
 
@@ -1150,10 +1151,26 @@
       };
     }
 
+    function normalizeTrips(records) {
+      if (!Array.isArray(records)) return [];
+      const ids = new Set();
+      const normalized = [];
+      for (const item of records) {
+        if (typeof item?.id !== "string" || !/^[A-Za-z0-9-]{1,64}$/.test(item.id) || ids.has(item.id)) continue;
+        ids.add(item.id);
+        normalized.push({ id: item.id, data: normalizeData(item.data) });
+      }
+      return normalized;
+    }
+
     const storedTrips = readStorage(TRIPS_KEY, null);
     let tripsSnapshot = JSON.stringify(storedTrips);
-    let trips = Array.isArray(storedTrips?.trips)
-      ? storedTrips.trips.map(trip => ({ id: trip.id, data: normalizeData(trip.data) })) : [];
+    let trips = normalizeTrips(storedTrips?.trips);
+    let savedTrips = CLOUD_SYNC_ENABLED ? clone(trips) : null;
+    let cloudBase = CLOUD_SYNC_ENABLED && Number.isSafeInteger(storedTrips?.cloud?.revision)
+      ? { revision: storedTrips.cloud.revision, trips: normalizeTrips(storedTrips.cloud.trips) } : null;
+    let cloudSyncRunning = false;
+    let cloudSyncTimer;
     let activeTrip = trips.find(trip => trip.id === storedTrips?.activeId) || trips[0] || null;
     let data = activeTrip?.data;
     let style = { ...DEFAULT_STYLE, ...readStorage("hk27_style", DEFAULT_STYLE) };
@@ -1184,19 +1201,151 @@
       }
     }
 
-    function writeTrips(nextTrips, nextActiveTrip) {
+    function storeTripState(nextTrips, nextActiveTrip, nextCloud = cloudBase) {
       try {
         if (JSON.stringify(readStorage(TRIPS_KEY, null)) !== tripsSnapshot) {
           showToast("另一個分頁已更新行程。請重新整理後再儲存。");
           return false;
         }
-        const serialized = JSON.stringify({ trips: nextTrips, activeId: nextActiveTrip?.id ?? null });
+        const serialized = JSON.stringify({
+          trips: nextTrips,
+          activeId: nextActiveTrip?.id ?? null,
+          ...(CLOUD_SYNC_ENABLED && nextCloud ? { cloud: nextCloud } : {})
+        });
         localStorage.setItem(TRIPS_KEY, serialized);
         tripsSnapshot = serialized;
+        if (CLOUD_SYNC_ENABLED) {
+          savedTrips = clone(nextTrips);
+          cloudBase = nextCloud;
+        }
         return true;
       } catch {
         showToast("無法儲存，請檢查瀏覽器的儲存設定或空間");
         return false;
+      }
+    }
+
+    function writeTrips(nextTrips, nextActiveTrip, sync = true) {
+      if (!storeTripState(nextTrips, nextActiveTrip)) return false;
+      if (CLOUD_SYNC_ENABLED && sync) {
+        setCloudStatus("已儲存在此瀏覽器，等待同步…");
+        scheduleCloudSync();
+      }
+      return true;
+    }
+
+    function setCloudStatus(message) {
+      const status = document.getElementById("tripStorage");
+      if (status.textContent !== message) status.textContent = message;
+    }
+
+    function scheduleCloudSync(delay = 150) {
+      clearTimeout(cloudSyncTimer);
+      cloudSyncTimer = setTimeout(syncCloudTrips, delay);
+    }
+
+    function mergeTripVersions(local, remote, base) {
+      const byId = list => new Map(list.map(trip => [trip.id, trip]));
+      const localById = byId(local);
+      const remoteById = byId(remote);
+      const baseById = byId(base);
+      const ids = new Set([...remoteById.keys(), ...localById.keys()]);
+      const merged = [];
+      const copies = new Map();
+      for (const id of ids) {
+        const mine = localById.get(id);
+        const theirs = remoteById.get(id);
+        const previous = baseById.get(id);
+        const mineJson = JSON.stringify(mine);
+        const theirsJson = JSON.stringify(theirs);
+        const previousJson = JSON.stringify(previous);
+        if (mineJson === theirsJson || theirsJson === previousJson) {
+          if (mine) merged.push(mine);
+        } else if (mineJson === previousJson) {
+          if (theirs) merged.push(theirs);
+        } else {
+          if (theirs) merged.push(theirs);
+          if (!mine) continue;
+          if (!theirs) {
+            merged.push(mine);
+            continue;
+          }
+          const copy = clone(mine);
+          copy.id = crypto.randomUUID();
+          copy.data.overview.title = `${copy.data.overview.title || "未命名旅程"}（此裝置版本）`;
+          merged.push(copy);
+          copies.set(id, copy.id);
+        }
+      }
+      return { merged, copies };
+    }
+
+    async function syncCloudTrips() {
+      if (!CLOUD_SYNC_ENABLED || cloudSyncRunning || editorSaveCallback || document.hidden) return;
+      cloudSyncRunning = true;
+      let syncAgain = false;
+      try {
+        const incoming = await fetch("/api/trips", { signal: AbortSignal.timeout(10000) });
+        if (incoming.status === 401) return location.replace("/login");
+        if (!incoming.ok) throw new Error("cloud read failed");
+        const result = await incoming.json();
+        if (editorSaveCallback || document.hidden) return;
+
+        let preservedCopies = false;
+        if (cloudBase?.revision !== result.revision) {
+          const remote = normalizeTrips(result.trips);
+          const { merged, copies } = mergeTripVersions(savedTrips, remote, cloudBase?.trips ?? []);
+          const oldActive = activeTrip?.id;
+          const selectedId = copies.get(oldActive) ?? oldActive;
+          const selected = merged.find(trip => trip.id === selectedId) || merged[0] || null;
+          const needsRender = JSON.stringify(merged) !== JSON.stringify(trips);
+          if (!storeTripState(merged, selected, { revision: result.revision, trips: clone(remote) })) {
+            setCloudStatus("這個分頁無法更新，請重新整理後再同步。");
+            return;
+          }
+          if (needsRender) {
+            trips = merged;
+            if (selected?.id !== oldActive) selectedDay = 0;
+            activeTrip = selected;
+            data = selected?.data;
+            render();
+          }
+          preservedCopies = copies.size > 0;
+        }
+
+        const pending = JSON.stringify(savedTrips);
+        if (pending !== JSON.stringify(cloudBase.trips)) {
+          setCloudStatus("正在同步行程…");
+          const uploaded = await fetch("/api/trips", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ revision: cloudBase.revision, trips: JSON.parse(pending) }),
+            signal: AbortSignal.timeout(10000)
+          });
+          if (uploaded.status === 401) return location.replace("/login");
+          if (uploaded.status === 409) {
+            syncAgain = true;
+            return;
+          }
+          if (uploaded.status === 413) {
+            setCloudStatus("行程超出雲端可儲存大小，本次變更仍在此瀏覽器。");
+            return;
+          }
+          if (!uploaded.ok) throw new Error("cloud write failed");
+          const { revision } = await uploaded.json();
+          if (!storeTripState(savedTrips, activeTrip, { revision, trips: JSON.parse(pending) })) {
+            setCloudStatus("雲端已儲存。請重新整理以更新這個分頁。");
+            return;
+          }
+          syncAgain = JSON.stringify(savedTrips) !== pending;
+        }
+        if (preservedCopies) showToast("同時修改的行程已保留兩份");
+        if (!syncAgain) setCloudStatus("已同步。可用同一帳號在其他裝置查看。");
+      } catch {
+        setCloudStatus("暫時無法同步。已儲存的變更會留在此瀏覽器，連線後再同步。");
+      } finally {
+        cloudSyncRunning = false;
+        if (syncAgain) scheduleCloudSync(800);
       }
     }
 
@@ -1225,12 +1374,12 @@
     function switchTrip(id) {
       const trip = trips.find(item => item.id === id);
       if (!trip || trip === activeTrip) return;
-      if (writeTrips(trips, trip)) activateTrip(trip);
+      if (writeTrips(trips, trip, false)) activateTrip(trip);
       else document.getElementById("tripSelect").value = activeTrip?.id || "";
     }
 
     function addTrip(tripData) {
-      const id = String(trips.reduce((max, trip) => Math.max(max, Number(trip.id) || 0), 0) + 1);
+      const id = crypto.randomUUID();
       const trip = { id, data: tripData };
       const nextTrips = [...trips, trip];
       if (!writeTrips(nextTrips, trip)) return false;
@@ -2112,10 +2261,21 @@
       render();
       document.body.classList.add("ready");
       setInterval(updateCountdown, 1000);
-      setInterval(checkSession, 30000);
-      document.addEventListener("visibilitychange", () => {
-        if (!document.hidden) void checkSession();
-      });
+      if (CLOUD_SYNC_ENABLED) {
+        setCloudStatus("正在載入雲端行程…");
+        document.getElementById("budgetStorage").textContent = "支出和分帳會隨這個帳號同步。";
+        scheduleCloudSync(0);
+        setInterval(syncCloudTrips, 60000);
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) scheduleCloudSync(0);
+        });
+        window.addEventListener("online", () => scheduleCloudSync(0));
+      } else {
+        setInterval(checkSession, 30000);
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) void checkSession();
+        });
+      }
       window.addEventListener("pageshow", event => {
         if (event.persisted) location.reload();
       });

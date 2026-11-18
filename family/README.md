@@ -1,8 +1,10 @@
 # 行程登入版
 
-登入後才能開啟行程編輯器。第一次登入會從空白開始，編輯的行程會存在目前的瀏覽器。同一組帳密在不同裝置或不同瀏覽器登入時，各自有自己的行程。
+登入後才能開啟行程編輯器。正式網站會把行程同步到登入的帳號，同一帳號可在不同裝置看到行程。各帳號的行程分開儲存。
 
-正式網址是 [家庭行程](https://family-trip-wayne00329.wayne00329-travel.workers.dev/)。GitHub Pages 首頁會連到 Cloudflare 的登入頁。本機網址上的既有行程會保留在原本的瀏覽器與網址。
+正式網址是 [家庭行程](https://family-trip-wayne00329.wayne00329-travel.workers.dev/)。GitHub Pages 首頁會連到 Cloudflare 的登入頁。若以前的行程已存在正式網站的瀏覽器裡，請用原來的裝置和帳號開啟正式網站，等到顯示「已同步」，再到其他裝置登入。
+
+同一趟行程在兩台裝置上同時修改時會保留兩份。連線暫時中斷時，已儲存的修改會留在目前瀏覽器，恢復連線後再同步。本機網址 `127.0.0.1` 有自己的瀏覽器資料。
 
 ## 邀請家人註冊
 
@@ -10,7 +12,7 @@
 2. 私下把邀請碼交給家人。每組只能使用一次，7 天後失效。
 3. 家人在登入頁展開「註冊帳號」，用邀請碼建立自己的帳密。
 
-每個帳號的行程會在瀏覽器內分開儲存。邀請功能在 Cloudflare 的正式網站使用。
+每個帳號的行程都各自同步。邀請功能在 Cloudflare 的正式網站使用。
 
 ## 在 Windows 本機試用
 
@@ -29,7 +31,7 @@ node family/server.mjs
 
 ## 更新 Cloudflare 上的正式網站
 
-從專案根目錄執行下列指令。Workers 執行登入與編輯頁，SQLite Durable Object 保存登入工作階段並限制登入嘗試。行程資料仍由瀏覽器保存。
+從專案根目錄執行下列指令。Workers 執行登入與編輯頁，SQLite Durable Object 保存登入工作階段、限制登入嘗試，並依帳號保存行程與版本。
 
 ```powershell
 npx.cmd --yes wrangler@4.164.0 login --device
@@ -49,4 +51,4 @@ node family/cloud-account.mjs | npx.cmd --yes wrangler@4.164.0 secret bulk --con
 
 在該主機使用相同的資料目錄執行 `node server.mjs setup`，再以 `node server.mjs` 啟動服務。無互動的部署環境可由主機的秘密設定提供 `TRIP_USERNAME` 和 `TRIP_PASSWORD`，只在執行 `setup` 時使用。把 HTTPS 網址和帳密私下提供給需要編輯的人。重新執行 `setup` 可更換帳密並登出既有工作階段。瀏覽器中的行程依帳號名稱儲存。
 
-登入服務需要上述 Node.js 主機，GitHub Pages 可展示靜態首頁。伺服器的預設資料目錄是 `family/.data/`，用於保存帳密和登入工作階段。行程存於瀏覽器。
+自行架設的 Node.js 服務使用 `family/.data/` 保存帳密和登入工作階段，行程則存於瀏覽器。Cloudflare 正式網站提供跨裝置同步。
