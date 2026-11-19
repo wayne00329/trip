@@ -218,7 +218,7 @@ function start() {
       return session ? response.writeHead(204).end() : send(response, 401, { error: 'sign_in_required' });
     }
     if (method === 'GET' && path === '/pdf-scanner') {
-      if (!session) return send(response, 401, { error: 'sign_in_required' });
+      // Sandboxed frames omit session cookies. This page only serves scanner code.
       response.setHeader('Content-Security-Policy', PDF_SCANNER_CSP);
       response.setHeader('Referrer-Policy', 'no-referrer');
       return send(response, 200, pdfScannerPage, 'text/html; charset=utf-8');

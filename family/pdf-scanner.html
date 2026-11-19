@@ -100,7 +100,7 @@
               script.onerror = reject;
               document.head.append(script);
             });
-            ocr = await Tesseract.createWorker("chi_tra+chi_sim+eng", 1, {
+            ocr = await Tesseract.createWorker("eng+chi_tra+chi_sim", 1, {
               workerPath: `${ocrBase}worker.min.js`,
               corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@6.0.0",
               cacheMethod: "none",
@@ -115,7 +115,8 @@
           canvas.width = Math.ceil(enlarged.width);
           canvas.height = Math.ceil(enlarged.height);
           try {
-            await page.render({ canvasContext: canvas.getContext("2d"), viewport: enlarged }).promise;
+            // Print rendering completes without animation frames inside the hidden iframe.
+            await page.render({ canvas, viewport: enlarged, intent: "print" }).promise;
             const { data } = await ocr.recognize(canvas);
             const recognized = data.text.split(/\r?\n/).map(text => ({ text })).filter(row => row.text.trim());
             if (recognized.length > lines.length || !/[\p{L}]/u.test(text) || /\uFFFD|[\uE000-\uF8FF]/u.test(text)) {

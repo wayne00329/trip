@@ -342,7 +342,7 @@ export default {
       return session && await auth.sessionAccount(session) ? response(null, 204) : response('Sign-in required', 401);
     }
     if (url.pathname === '/pdf-scanner') {
-      if (!session || !await auth.sessionAccount(session)) return response('Sign-in required', 401);
+      // Sandboxed frames omit session cookies. This page only serves scanner code.
       return response(pdfScannerPage, 200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Content-Security-Policy': PDF_SCANNER_CSP,
