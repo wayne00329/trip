@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<title>PDF 行程掃描</title>
+<script>
+  const pdfBase = "https://cdn.jsdelivr.net/npm/pdfjs-dist@5.4.624/";
+  const ocrBase = "https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/";
+  const editorOrigin = new URL(location.href).origin;
+
+  function report(kind, payload) {
+    parent.postMessage({ kind, ...payload }, editorOrigin);
+  }
+
+  function textRows(items) {
+    const fragments = items.filter(item => item.str?.trim()).map(item => ({
+      text: item.str,
+      x: item.transform[4],
+      y: item.transform[5],
+      width: item.width,
+      height: item.height
+    })).sort((a, b) => b.y - a.y);
+
+    const rows = [];
+    for (const fragment of fragments) {
+      const row = rows.at(-1);
+      if (row && Math.abs(row.y - fragment.y) <= Math.max(2, fragment.height * 0.35)) {
+        row.fragments.push(fragment);
+      } else {
+        rows.push({ y: fragment.y, fragments: [fragment] });
+      }
+    }
+
+    return rows.map((row, index) => {
+      let text = "";
+      let right;
+      let height = 0;
+      for (const fragment of row.fragments.sort((a, b) => a.x - b.x)) {
+        const gap = fragment.x - right;
+        if (gap >= fragment.height * 1.05) text = text.trimEnd() + "\t";
+        else if (gap >= fragment.height * 0.17 && !/\s$/.test(text) && !/^\s/.test(fragment.text)) text += " ";
+        text += fragment.text;
+        right = fragment.x + fragment.width;
+        height = Math.max(height, fragment.height);
+      }
+      return { text: text.trim(), height, gap: index ? rows[index - 1].y - row.y : 0 };
+    });
+  }
+
+  async function scan(file) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!new TextDecoder().decode(bytes.subarray(0, 1024)).includes("%PDF-")) {
+      report("error", { message: "無法開啟這個檔案，請選擇有效的 PDF。" });
+      return;
+    }
+
+    let loading;
+    let ocr;
+    try {
+      const pdfjs = await import(`${pdfBase}build/pdf.min.mjs`);
+      pdfjs.GlobalWorkerOptions.workerSrc = `${pdfBase}build/pdf.worker.min.mjs`;
+      loading = pdfjs.getDocument({
+        data: bytes,
+        cMapUrl: `${pdfBase}cmaps/`,
+        standardFontDataUrl: `${pdfBase}standard_fonts/`,
+        wasmUrl: `${pdfBase}wasm/`,
+        cMapPacked: true,
+        useWorkerFetch: true,
+        isEvalSupported: false,
+        disableFontFace: true,
+        isOffscreenCanvasSupported: false,
+        isImageDecoderSupported: false
+      });
+      loading.onPassword = () => {
+        report("error", { message: "這份 PDF 有密碼保護，請選擇已解除密碼的版本。" });
+        void loading.destroy().catch(() => {});
+      };
+      const pdf = await loading.promise;
+      if (pdf.numPages > 100) {
+        report("error", { message: "PDF 超過 100 頁，請分成較小的檔案再匯入。" });
+        return;
+      }
+      const rows = [];
+      let scannedPages = 0;
+      for (let number = 1; number <= pdf.numPages; number++) {
+        report("progress", { message: `正在讀取 PDF 第 ${number} / ${pdf.numPages} 頁…` });
+        const page = await pdf.getPage(number);
+        const content = await page.getTextContent();
+        let lines = textRows(content.items);
+        const text = lines.map(line => line.text).join("\n");
+        // A scanned page may still have a selectable heading or page number.
+        if (!/[\p{L}]/u.test(text) || /\uFFFD|[\uE000-\uF8FF]/u.test(text) ||
+            (lines.length < 4 && !/\d\s*[:：]\s*\d{2}/.test(text))) {
+          report("progress", { message: `正在辨識第 ${number} / ${pdf.numPages} 頁的圖片文字…` });
+          if (!ocr) {
+            await new Promise((resolve, reject) => {
+              const script = document.createElement("script");
+              script.src = `${ocrBase}tesseract.min.js`;
+              script.crossOrigin = "anonymous";
+              script.onload = resolve;
+              script.onerror = reject;
+              document.head.append(script);
+            });
+            ocr = await Tesseract.createWorker("chi_tra+chi_sim+eng", 1, {
+              workerPath: `${ocrBase}worker.min.js`,
+              corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@6.0.0",
+              cacheMethod: "none",
+              errorHandler: () => report("error", { message: "圖片文字辨識失敗，請確認網路連線後重試。" })
+            });
+            await ocr.setParameters({ preserve_interword_spaces: "1" });
+          }
+          const viewport = page.getViewport({ scale: 1 });
+          const scale = Math.min(3, 2400 / Math.max(viewport.width, viewport.height));
+          const enlarged = page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.ceil(enlarged.width);
+          canvas.height = Math.ceil(enlarged.height);
+          try {
+            await page.render({ canvasContext: canvas.getContext("2d"), viewport: enlarged }).promise;
+            const { data } = await ocr.recognize(canvas);
+            const recognized = data.text.split(/\r?\n/).map(text => ({ text })).filter(row => row.text.trim());
+            if (recognized.length > lines.length || !/[\p{L}]/u.test(text) || /\uFFFD|[\uE000-\uF8FF]/u.test(text)) {
+              lines = recognized;
+              scannedPages++;
+            }
+          } finally {
+            canvas.width = canvas.height = 0;
+          }
+        }
+        rows.push(...lines);
+        page.cleanup();
+      }
+      report("result", { rows, scannedPages });
+    } catch (error) {
+      report("error", { message: error?.name === "InvalidPDFException"
+        ? "PDF 已損毀或格式不正確，請換一個檔案。"
+        : "無法完成 PDF 掃描，請確認網路連線及檔案後重試。" });
+    } finally {
+      await ocr?.terminate();
+      await loading?.destroy();
+    }
+  }
+
+  window.addEventListener("message", event => {
+    if (event.source !== parent || event.origin !== editorOrigin || !(event.data?.file instanceof File)) return;
+    void scan(event.data.file);
+  });
+  report("ready");
+</script>
+</html>

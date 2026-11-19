@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { SECURITY_HEADERS, SESSION_SECONDS, TOKEN_PATTERN } from './security.mjs';
+import { EDITOR_CSP, PDF_SCANNER_CSP, SECURITY_HEADERS, SESSION_SECONDS, TOKEN_PATTERN } from './security.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const dataDirectory = resolve(process.env.TRIP_DATA_DIR || fileURLToPath(here('.data/')));
@@ -107,6 +107,7 @@ function start() {
   const cookieName = secure ? '__Host-family-trip' : 'family-trip';
   const cookie = (token, age) => `${cookieName}=${token}; Path=/; Max-Age=${age}; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
   const editorPage = readFileSync(here('index.html'), 'utf8');
+  const pdfScannerPage = readFileSync(here('pdf-scanner.html'), 'utf8');
   const loginPage = readFileSync(here('login.html'), 'utf8');
   const account = db.prepare('SELECT name, salt, hash FROM account WHERE id = 1');
   const findSession = db.prepare('SELECT 1 FROM sessions WHERE token_hash = ? AND expires_at > ?');
@@ -216,9 +217,16 @@ function start() {
     if (method === 'GET' && path === '/api/session') {
       return session ? response.writeHead(204).end() : send(response, 401, { error: 'sign_in_required' });
     }
+    if (method === 'GET' && path === '/pdf-scanner') {
+      if (!session) return send(response, 401, { error: 'sign_in_required' });
+      response.setHeader('Content-Security-Policy', PDF_SCANNER_CSP);
+      response.setHeader('Referrer-Policy', 'no-referrer');
+      return send(response, 200, pdfScannerPage, 'text/html; charset=utf-8');
+    }
     if (method === 'GET' && (path === '/' || path === '/index.html')) {
       if (!session) return redirect(response, '/login');
       const scope = digest(account.get().name);
+      response.setHeader('Content-Security-Policy', EDITOR_CSP);
       return send(response, 200, editorPage.replace('__TRIP_ACCOUNT_SCOPE__', scope), 'text/html; charset=utf-8');
     }
     return send(response, 404, { error: 'not_found' });

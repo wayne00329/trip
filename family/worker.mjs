@@ -2,8 +2,9 @@ import { DurableObject } from 'cloudflare:workers';
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import editorPage from './index.html';
+import pdfScannerPage from './pdf-scanner.html';
 import loginPage from './login.html';
-import { SECURITY_HEADERS, SESSION_SECONDS, TOKEN_PATTERN } from './security.mjs';
+import { EDITOR_CSP, PDF_SCANNER_CSP, SECURITY_HEADERS, SESSION_SECONDS, TOKEN_PATTERN } from './security.mjs';
 
 const COOKIE = '__Host-family-trip';
 const MAX_FORM_BYTES = 4096;
@@ -340,6 +341,14 @@ export default {
     if (url.pathname === '/api/session') {
       return session && await auth.sessionAccount(session) ? response(null, 204) : response('Sign-in required', 401);
     }
+    if (url.pathname === '/pdf-scanner') {
+      if (!session || !await auth.sessionAccount(session)) return response('Sign-in required', 401);
+      return response(pdfScannerPage, 200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Security-Policy': PDF_SCANNER_CSP,
+        'Referrer-Policy': 'no-referrer'
+      });
+    }
     if (url.pathname === '/' || url.pathname === '/index.html') {
       const account = session ? await auth.sessionAccount(session) : null;
       if (!account) return redirect('/login');
@@ -347,7 +356,7 @@ export default {
       const page = editorPage.replace('__TRIP_ACCOUNT_SCOPE__', account.scope)
         .replace('data-cloud-sync="disabled"', 'data-cloud-sync="enabled"')
         .replace('<!-- TRIP_ACCOUNT_ACTIONS -->', actions);
-      return response(page, 200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return response(page, 200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': EDITOR_CSP });
     }
     return response('Not found', 404);
   }

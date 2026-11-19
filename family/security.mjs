@@ -7,3 +7,7 @@ export const SECURITY_HEADERS = {
   'Referrer-Policy': 'same-origin',
   'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src https: http:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 };
+
+export const EDITOR_CSP = `${SECURITY_HEADERS['Content-Security-Policy']}; frame-src 'self'`;
+
+export const PDF_SCANNER_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; worker-src blob:; connect-src https://cdn.jsdelivr.net; frame-ancestors 'self'; base-uri 'none'; form-action 'none'";
