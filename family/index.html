@@ -499,6 +499,8 @@
       gap: 10px;
     }
 
+    .spot-top > .edit-actions { margin-inline-start: auto; }
+
     .address {
       margin: 7px 0;
       color: var(--sub);
@@ -1514,7 +1516,7 @@
               : `<div class="spot-image placeholder">🏞️</div>`}
             <div class="spot-content">
               <div class="spot-top">
-                <div class="time">${escapeHTML(spot.time)}</div>
+                ${spot.time ? `<div class="time">${escapeHTML(spot.time)}</div>` : ""}
                 <div class="edit-actions">
                   <button class="small-button" data-edit-spot="${index}" onclick="editSpot(${index})">修改</button>
                   <button class="small-button" data-move-spot="${index},-1" onclick="moveSpot(${index}, -1)" aria-label="將${escapeHTML(spot.title)}往前移" ${index === 0 ? "disabled" : ""}>↑</button>
@@ -2166,35 +2168,53 @@
       document.getElementById("tripPrint").replaceChildren();
     });
 
-    const pdfClock = /^\s*(?:(上午|下午|早上|晚上|中午|[ap]\.?m\.?)\s*)?(\d{1,2})(?:\s*:\s*([0-5]\d)|\s*[點点時时](?:\s*([0-5]?\d)\s*分?|\s*(半))?)(?:\s*([ap]\.?m\.?))?(?![\d:])/i;
+    const pdfClock = String.raw`(?:(?:上午|下午|早上|晚上|中午|[ap]\.?m\b\.?)\s*)?(?:[01]?\d|2[0-4])(?:\s*:\s*[0-5]\d|\s*[點点時时](?:\s*(?:[0-5]?\d\s*分?|半))?)(?:\s*[ap]\.?m\b\.?)?`;
+    const pdfTimeRange = new RegExp(`(?<![a-z0-9])${pdfClock}(?:\\s*(?:[-–—~至到]|\\bto\\b)\\s*${pdfClock})?(?![\\d:])`, "gi");
     const pdfDate = /^(?:(\d{4})\s*[-/.年]\s*)?(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:\s*[日號号])?(?![\d/.:-])/;
     const pdfDay = /^(?:第\s*([1-9]\d*|[一二三四五六七八九十]+)\s*(?:天|日)|day\s*0*([1-9]\d*)\b)/i;
     const pdfWeekday = /^(?:\s*\((?:[日一二三四五六天]|(?:週|周|星期)[日一二三四五六天]|[a-z]{3,9})\)|\s*(?:週|周|星期)[日一二三四五六天])/i;
     const pdfSection = /^(?:航班資訊|住宿資訊|旅費(?:管理)?|分帳結算|行前清單)$/;
     const pdfItinerary = /^(?:每日(?:散策)?行程|行程(?:表|安排)|旅遊行程|(?:daily\s+)?itinerary)$/i;
     const pdfSeparator = /^\s*[·・|｜:：–—-]?\s*/;
+    const pdfColumns = /\s*\t\s*|\s*\|\s*/;
+    const pdfPlaceHeader = /^(?:地[點点]|目的地|到達地點|抵達地點|景[點点](?:名稱)?|停留地點|location|destination|place|stop)$/i;
+    const pdfHeader = /^(?:日期|時間|时[间間]|出發(?:時間|地點)?|(?:抵達|到達)(?:時間)?|行程|活動|活动|交通(?:方式)?|通勤(?:時間)?|備註|备注|date|time|origin|departure|arrival|activity|transport(?:ation)?|duration|notes?)$/i;
+    const pdfMergedHeaders = /^(?:日期|時間|出發時間|抵達時間|到達時間|行程|活動|交通方式|通勤時間|地點|目的地|備註){2,}$/;
+    const pdfDetail = /(?:備註|备注|說明|说明|地址|交通(?:方式|時間)?|通勤(?:時間)?|接駁|車程|路程|停留(?:時間)?|(?:預計)?(?:出發|抵達|到達)時間|車次|班次|票價|費用|門票|營業時間|notes?|address|transport(?:ation)?|duration|travel time|arrival time|departure time)/i;
+    const pdfDetailLine = new RegExp(`^(?:${pdfDetail.source})(?:\\s*[:：\\d]|$)`, "i");
+    const pdfDetailSuffix = new RegExp(`[\\s,，;；。]+${pdfDetail.source}(?=\\s*[:：\\d]|$)`, "i");
+    const pdfDuration = /(?:約|约|大約|大约|約需|约需|約莫)?\s*\d+(?:\.\d+)?\s*(?:小時|小时|個鐘頭|分钟|分鐘|秒鐘|min(?:ute)?s?\b|hours?\b|hrs?\b|km\b|公里)(?:\s*\d+\s*(?:分(?:鐘|钟)?|min(?:ute)?s?\b))?/gi;
+    const pdfTravelSuffix = /(?:步行|徒步|開車|車程|路程|停留|公車|計程車|搭車|\bwalk\b|\bdrive\b)\s*(?:(?:約需|约需|約|约)\s*)?\d/i;
+    const pdfTransport = /^(?:搭(?:乘|車|机|機|公車|巴士|地鐵|捷運|計程車|出租車|火車)|乘(?:坐|車|船|機)|轉[乘車车]|换乘|步行|徒步|自行開車|開車|自駕|打車|叫車|坐車|車程|通勤|接駁|機場快線|(?:公車|巴士|地鐵|捷運|火車|高鐵)\s*(?:\d|[A-Z]?\d|轉乘|路線|班次)|(?:KTX|HSR|THSR)\s*\d+|take\s+(?:the\s+)?(?:bus|train|metro|subway|taxi)|transfer(?:\s|$)|walk(?:\s|$)|drive(?:\s|$)|(?:bus|train|metro|subway|taxi)\s+(?:line\b|no\.?\b|\d))/i;
+    const pdfGeneric = /^(?:出發|出发|準備出發|集合|解散|抵達|到達|到达|候車|候機|登機|下車|下機|起飛|降落|早餐|午餐|晚餐|用餐|午休|休息|自由活動|自由活动|飯店|酒店|住宿|入住|退房|返程|回程|行程結束|無行程|尚未安排景點或活動|departure|arrival|breakfast|lunch|dinner|meal|free time|rest|check[- ]?in|check[- ]?out|hotel)[。.!！]?$/i;
 
-    function readPdfTime(text) {
-      const match = text.match(pdfClock);
-      if (!match) return null;
-      const period = (match[1] || match[6] || "").toLowerCase();
-      let hour = Number(match[2]);
-      if (hour > 24 || (period && (hour < 1 || hour > 12))) return null;
-      const minute = Number(match[3] ?? match[4] ?? (match[5] ? 30 : 0));
-      if (hour === 24 && minute !== 0) return null;
-      if (period) {
-        const isPm = /下午|晚上|中午|^p/.test(period) && !(period === "晚上" && hour === 12);
-        hour = hour % 12 + (isPm ? 12 : 0);
-      }
-      return { time: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`, rest: text.slice(match[0].length) };
-    }
+    function readPdfDestination(value) {
+      let title = value.trim().replace(/^[•●▪■]\s*/, "");
+      if (!title || pdfDetailLine.test(title)) return "";
 
-    function readPdfTimeRange(text) {
-      const first = readPdfTime(text);
-      if (!first) return null;
-      const separator = first.rest.match(/^\s*(?:[-–—~～至到]|\bto\b)\s*/i);
-      const end = separator && readPdfTime(first.rest.slice(separator[0].length));
-      return end ? { time: `${first.time}–${end.time}`, rest: end.rest } : first;
+      const route = title.split(/\s*(?:→|➜|➝|⇒|->|=>)\s*/);
+      title = route.at(-1).replace(/\s*[([]([^)\]]*)[)\]]/g, (match, detail) =>
+        pdfDetail.test(detail) || pdfTransport.test(detail.trim()) ||
+          detail !== detail.replace(pdfTimeRange, "").replace(pdfDuration, "") ? "" : match
+      );
+      title = title.replace(pdfTimeRange, "").trim().replace(pdfSeparator, "");
+      if (pdfDetailLine.test(title)) return "";
+      const isTransport = pdfTransport.test(title);
+      const arrival = title.match(/(?:前往|抵達|抵达|到達|到达|回到|返回|開往|开往)\s*[:：]?\s*(.+)/);
+      const transportEnd = isTransport && title.match(/(?:到|至|往|\bto\b)\s*[:：]?\s*(.+)/i);
+      if (arrival || transportEnd) title = (arrival || transportEnd)[1];
+      else if (isTransport) return "";
+
+      title = title.replace(/^(?:(?:目的地|到達地點|抵達地點|地[點点]|景[點点]|午餐|晚餐|早餐|用餐|住宿|集合|destination|location|lunch|dinner|breakfast)(?:\s*[:：–—-]\s*|\s+)|(?:參觀|参观|造訪|游覽|遊覽|遊玩|逛逛|辦理入住|入住|前往|抵達|到達|到达|返回|回到|到)\s*[:：]?\s*|(?:arrive at|visit|head to|check in at|return to)\s+)/i, "");
+      title = title.split(pdfDetailSuffix, 1)[0].split(pdfTravelSuffix, 1)[0]
+        .replace(pdfDuration, "").replace(/[\s,，;；。:：·・–—~.-]+$/, "").trim()
+        .replace(/(\p{Script=Han})\s*(?:散步|逛街|拍照|看夜景|看夕陽|自由活動)$/u, "$1");
+      if (!/\p{L}/u.test(title) || pdfGeneric.test(title) || pdfTransport.test(title) ||
+          /^(?:散步|逛街|拍照|看夜景|看夕陽|提醒|注意事項|記得|請(?:先|提前|確認|攜帶)|建議提前)/.test(title) ||
+          /^(?:(?:預計)?出發|起點|departure\b|depart\b|leave\b)/i.test(title) ||
+          /(?:出發|出发)[。.]?$/.test(title) ||
+          pdfDetailLine.test(title) || pdfHeader.test(title) || pdfPlaceHeader.test(title)) return "";
+      return title;
     }
 
     function readPdfDay(text) {
@@ -2228,9 +2248,7 @@
       const days = [];
       const byDate = new Map();
       let day;
-      let spot;
-      let pendingTime = "";
-      let timeCount = 0;
+      let placeColumn = -1;
 
       for (let index = section + 1; index < lines.length; index++) {
         const { text, height, gap } = lines[index];
@@ -2239,16 +2257,25 @@
           continue;
         }
         if (/^(?:尚未安排景點或活動[。.]?|page\s+\d+(?:\s+of\s+\d+)?|(?:第\s*)?\d+\s*(?:頁|页)|\d+\s*\/\s*\d+\s*(?:頁|页)|\d+)$/i.test(text)) continue;
-        const columns = text.replace(/^[•●▪■]\s*/, "").split(/\s*\t\s*|\s*\|\s*/);
-        if (columns.every(value => /^(?:(?:日期|時間|时[间間]|行程|活動|活动|地點|地点|備註|备注)|date|time|activity|location|notes?)+$/i.test(value.replace(/\s/g, "")))) continue;
+        const description = text.replace(/^[•●▪■]\s*/, "");
+        const columns = description.split(pdfColumns);
+        if (columns.length === 1 && pdfMergedHeaders.test(description)) continue;
+        if (columns.every(value => pdfHeader.test(value) || pdfPlaceHeader.test(value))) {
+          if (columns.length > 1) {
+            placeColumn = columns.findIndex(value => pdfPlaceHeader.test(value));
+            if (placeColumn >= 0 && /^(?:日期|date)$/i.test(columns[0])) placeColumn--;
+          }
+          continue;
+        }
 
         const date = readPdfDay(columns[0]);
         const customDay = printed && Math.abs(height / lines[section].height - 0.8) < 0.015;
-        let description = text.replace(/^[•●▪■]\s*/, "");
+        let fields = columns;
         if (date || customDay) {
-          const content = date ? [date.rest, ...columns.slice(1)].filter(Boolean).join("\t") : "";
-          const inlineActivity = content && (columns.length > 1 || readPdfTimeRange(content));
-          const label = inlineActivity
+          fields = date?.rest ? [date.rest, ...columns.slice(1)] : columns.slice(1);
+          const inlinePlace = !customDay && fields.length &&
+            (columns.length > 1 || date.key.startsWith("date:") || date.rest !== date.rest.replace(pdfTimeRange, ""));
+          const label = inlinePlace
             ? (date.rest ? columns[0].slice(0, -date.rest.length).replace(/[\s:：·・–—-]+$/, "") : columns[0])
             : text;
           const key = date?.key || `label:${label}`;
@@ -2259,61 +2286,31 @@
           } else {
             day = byDate.get(key);
           }
-          spot = null;
-          pendingTime = "";
-          if (!inlineActivity) continue;
-          description = content;
+          if (!inlinePlace) continue;
         }
 
-        const fields = description.split(/\s*\t\s*|\s*\|\s*/);
-        let time = readPdfTimeRange(description);
-        if (!time && fields.length > 1) {
-          const timeIndex = fields.findIndex(value => {
-            const candidate = readPdfTimeRange(value);
-            return candidate && !candidate.rest.trim();
-          });
-          if (timeIndex >= 0) {
-            time = { ...readPdfTimeRange(fields[timeIndex]), rest: fields.filter((_, index) => index !== timeIndex).join("\t") };
-          }
-        }
-
-        if (!day && !time && (hasDays || section < 0)) continue;
+        const hasTime = fields.some(value => value !== value.replace(pdfTimeRange, ""));
+        if (!day && (hasDays || (section < 0 && !hasTime && placeColumn < 0))) continue;
+        // In the app's exported PDF, lines tightly spaced below a stop are notes or addresses.
+        if (printed && !date && !hasTime && day?.spots.length && height > 0 && gap > 0 && gap <= height * 1.65) continue;
+        const candidates = placeColumn >= 0 && fields.length > 1 ? fields.slice(placeColumn, placeColumn + 1) : fields;
+        const title = candidates.map(readPdfDestination).find(Boolean);
+        if (!title) continue;
         if (!day) {
           day = { label: "第 1 天", spots: [] };
           days.push(day);
         }
-        if (time && !time.rest.trim()) {
-          pendingTime = time.time;
-          spot = null;
-          continue;
-        }
-        const title = (time?.rest ?? description).replace(pdfSeparator, "").trim();
-        if (!title) continue;
-        const note = title.match(/^(?:備註|备注|說明|说明|地址|notes?|address)\s*:\s*(.*)$/i);
-        const continuation = spot && !time && !pendingTime && (note ||
-          (printed && height > 0 && gap > 0 && gap <= height * 1.65));
-        if (continuation) {
-          if (note && /^(?:地址|address)/i.test(title)) spot.address = note[1];
-          else spot.note = [spot.note, note?.[1] ?? title].filter(Boolean).join("\n");
-          continue;
-        }
-
-        const [name, ...details] = title.split(/\t|\s*\|\s*/);
-        spot = { title: name.trim(), time: time?.time || pendingTime, note: details.join("\n") };
-        pendingTime = "";
-        if (!spot.title) continue;
-        if (spot.time) timeCount++;
-        day.spots.push(spot);
+        if (!day.spots.some(spot => spot.title === title)) day.spots.push({ title });
       }
 
-      const count = days.reduce((sum, item) => sum + item.spots.length, 0);
+      const importedDays = days.filter(item => item.spots.length);
+      const count = importedDays.reduce((sum, item) => sum + item.spots.length, 0);
       if (!count) return null;
       const title = printed ? lines[0].text : filename.replace(/\.pdf$/i, "").trim() || "PDF 旅程";
-      const dates = days.filter(item => item.spots.length && pdfDate.test(item.label)).map(item => item.label);
+      const dates = importedDays.filter(item => pdfDate.test(item.label)).map(item => item.label);
       return {
-        data: { siteName: "旅", overview: { title, dates: [...new Set(dates)].join("、") }, days },
-        count,
-        timeCount
+        data: { siteName: "旅", overview: { title, dates: [...new Set(dates)].join("、") }, days: importedDays },
+        count
       };
     }
 
@@ -2377,7 +2374,7 @@
           try {
             const result = parsePdfItinerary(rows, file.name);
             if (!result) {
-              finish("找不到可匯入的行程。請確認 PDF 有日期或時間與對應的活動名稱。");
+              finish("找不到可匯入的地點。請確認 PDF 有每日行程和停留地點。");
               return;
             }
             if (!addTrip(normalizeData(result.data))) {
@@ -2386,7 +2383,7 @@
             }
             setEditing(true);
             const ocrSummary = scannedPages ? `，其中 ${scannedPages} 頁使用圖片辨識` : "";
-            finish(`已匯入 ${result.count} 筆行程，${result.timeCount} 筆已填入時間${ocrSummary}。請核對內容。`);
+            finish(`已依日期匯入 ${result.count} 個地點${ocrSummary}。請核對內容。`);
             showToast("PDF 已匯入為新旅程");
             document.getElementById("itinerary").scrollIntoView();
           } catch {
